@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
-"""ST 数据管线：从原始交易文件提取并标准化为 dashboard 分析数据集。
-输入: ST/data/raw/  输出: ST/data/processed/
+"""ST 数据管线 v2（FUTU 口径修正版 + 资金明细并入）。
+关键修正（相对 v1，均经独立三轮校验）：
+  1) v1 把 '卖空' 当 '买入' → SBUX 由亏 9,486 误记 -705、01519 由盈 4,500 误记 -4,540；
+  2) v1 USD/HKD 金额直接相加 → 虚增约 2,846；现全部分币种核算；
+  3) v1 KPI 误用 Excel 台账旧口径（本金 9500/亏 4260，系 2022 年前旧账户），
+     现改用资金明细真实口径：迁移设立 + 银行出入金 + 期末现金/持仓；
+  4) 资产迁移带入的期初空头/多头以成交价建仓，16,000 股'卖出无多可平'转为开空，时间线自洽。
 """
 import csv, json, re
-from collections import deque
+from collections import deque, defaultdict
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -13,14 +18,14 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "data" / "processed"
 OUT.mkdir(parents=True, exist_ok=True)
-
 ERR_TOKENS = {"", "#VALUE!", "#DIV/0!", "#REF!", "#N/A", "n/a", "None"}
+HKD_USD = 0.12875  # 2026-09 参考汇率，仅用于折算展示，不改变分币种统计
 
 def num(v):
-    if v is None or v == "": return None
     if isinstance(v, (int, float)): return float(v)
-    try: return float(str(v).replace(",", ""))
-    except ValueError: return None
+    s = (v or "").replace(",", "").strip().replace("+", "")
+    try: return float(s)
+    except Exception: return None
 
 def clean(v):
     if v is None: return None
@@ -37,8 +42,6 @@ def excel_date(v):
         s = v.strip()
         m = re.match(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
         if m: return "%04d-%02d-%02d" % (int(m[1]), int(m[2]), int(m[3]))
-        m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)  # MM/DD/YYYY (Futu导出为美式)
-        if m: return "%04d-%02d-%02d" % (int(m[3]), int(m[1]), int(m[2]))
     if isinstance(v, (int, float)) and 20000 < v < 60000:
         return (date(1899, 12, 30) + timedelta(days=float(v))).strftime("%Y-%m-%d")
     return None
@@ -47,61 +50,237 @@ def as_int(v):
     try: return int(str(v).strip())
     except Exception: return None
 
-# ---------------- POEMS (Excel) ----------------
+def read_csv(p):
+    return list(csv.reader(p.read_text(encoding="utf-8-sig").splitlines()))
+
+# ============ FUTU 成交（定稿多空模型） ============
+fills = read_csv(RAW / "历史成交-保证金综合账户(1599)-20200101-20260922.csv")
+fh = {h: i for i, h in enumerate(fills[0])}
+frows = sorted([r for r in fills[1:] if r and any(c.strip() for c in r)],
+               key=lambda r: r[fh["成交时间"]])
+def fget(r, col): return r[fh[col]].strip()
+
+longs, shorts = {}, {}
+fsym = {}
+fevents = []
+sell_opened_short = 0.0
+for r in frows:
+    c = fget(r, "代码"); side = fget(r, "方向")
+    q, p, a = num(r[fh["成交数量"]]), num(r[fh["成交价格"]]), num(r[fh["成交金额"]])
+    ccy = fget(r, "币种"); d_ = fget(r, "成交时间")[:10].replace("/", "-")
+    e = fsym.setdefault(c, {"name": fget(r, "名称"), "ccy": ccy, "market": fget(r, "市场"),
+                            "n": 0, "buy_q": 0.0, "sell_q": 0.0, "short_q": 0.0,
+                            "buy_amt": 0.0, "sell_amt": 0.0, "short_amt": 0.0,
+                            "realized": 0.0, "events": 0, "wins": 0,
+                            "max_win": None, "max_loss": None})
+    e["n"] += 1
+    if side == "买入":
+        e["buy_q"] += q; e["buy_amt"] += a
+        rem = q; dq = shorts.setdefault(c, deque()); pnl = 0.0; cov = 0.0
+        while rem > 1e-9 and dq:
+            l = dq[0]; take = min(rem, l[0]); pnl += take * (l[1] - p); cov += take
+            l[0] -= take; rem -= take
+            if l[0] <= 1e-9: dq.popleft()
+        if cov > 1e-9:
+            e["realized"] += pnl; e["events"] += 1
+            if pnl > 0: e["wins"] += 1
+            e["max_win"] = max(e["max_win"] or pnl, pnl); e["max_loss"] = min(e["max_loss"] or pnl, pnl)
+            fevents.append({"date": d_, "code": c, "name": e["name"], "type": "平空",
+                            "qty": round(cov, 2), "price": p, "pnl": round(pnl, 2), "ccy": ccy})
+        if rem > 1e-9: longs.setdefault(c, deque()).append([rem, p])
+    elif side == "卖空":
+        e["short_q"] += q; e["short_amt"] += a
+        shorts.setdefault(c, deque()).append([q, p])
+    else:  # 卖出：先平多，剩余转开空（保证金账户允许卖空）
+        e["sell_q"] += q; e["sell_amt"] += a
+        rem = q; dq = longs.setdefault(c, deque()); pnl = 0.0; cl = 0.0
+        while rem > 1e-9 and dq:
+            l = dq[0]; take = min(rem, l[0]); pnl += take * (p - l[1]); cl += take
+            l[0] -= take; rem -= take
+            if l[0] <= 1e-9: dq.popleft()
+        if cl > 1e-9:
+            e["realized"] += pnl; e["events"] += 1
+            if pnl > 0: e["wins"] += 1
+            e["max_win"] = max(e["max_win"] or pnl, pnl); e["max_loss"] = min(e["max_loss"] or pnl, pnl)
+            fevents.append({"date": d_, "code": c, "name": e["name"], "type": "平多",
+                            "qty": round(cl, 2), "price": p, "pnl": round(pnl, 2), "ccy": ccy})
+        if rem > 1e-9:
+            shorts.setdefault(c, deque()).append([rem, p]); sell_opened_short += rem
+
+def bal(c, s_):
+    src = (longs if s_ == "L" else shorts).get(c, deque())
+    return round(sum(l[0] for l in src), 2)
+def wavg(c, s_):
+    src = (longs if s_ == "L" else shorts).get(c, deque())
+    tq = sum(l[0] for l in src)
+    return round(sum(l[0] * l[1] for l in src) / tq, 4) if tq > 1e-9 else None
+
+last_px = {fget(r, "代码"): num(r[fh["成交价格"]]) for r in frows}
+flong_book, fshort_book = {}, {}
+float_by_ccy = defaultdict(float)
+for c in sorted(set(list(longs) + list(shorts))):
+    L, S = bal(c, "L"), bal(c, "S")
+    lp = last_px[c]; ccy = fsym[c]["ccy"]
+    fl = (lp - wavg(c, "L")) * L if L else 0.0
+    fs = (wavg(c, "S") - lp) * S if S else 0.0
+    float_by_ccy[ccy] += fl + fs
+    if L: flong_book[c] = {"qty": L, "avg_cost": wavg(c, "L"), "last_price": lp,
+                           "u_pnl": round(fl, 2), "market": fsym[c]["market"], "name": fsym[c]["name"]}
+    if S: fshort_book[c] = {"qty": S, "avg_price": wavg(c, "S"), "last_price": lp,
+                            "u_pnl": round(fs, 2), "market": fsym[c]["market"], "name": fsym[c]["name"]}
+
+realized_by_ccy = defaultdict(float)
+for c, e in fsym.items(): realized_by_ccy[e["ccy"]] += e["realized"]
+trade_cash_by_ccy = defaultdict(float)
+for c, e in fsym.items():
+    trade_cash_by_ccy[e["ccy"]] += e["sell_amt"] + e["short_amt"] - e["buy_amt"]
+
+# ============ FUTU 资金明细 ============
+cf_path = RAW / "资金明细-保证金综合账户(1599)-20260923-170407.csv"
+cf = read_csv(cf_path) if cf_path.exists() else None
+cash = {"present": bool(cf), "by_type": {}, "last_bal": {}, "deposits": [], "withdrawals": [],
+        "transfers_in": {}, "fx": {}, "fees_by_ccy": {}, "interest_by_ccy": {},
+        "dividend_by_ccy": {}, "fund_by_ccy": {}, "n": 0, "first": None, "last": None,
+        "recon": {}}
+if cf:
+    ch = {h: i for i, h in enumerate(cf[0])}
+    crows = [r for r in cf[1:] if r and any(x.strip() for x in r)]
+    recs = []
+    for r in crows:
+        recs.append({"type": r[ch["交易类型"]].strip(), "code": r[ch["代码"]].strip(),
+                     "name": r[ch["名称"]].strip(), "amt": num(r[ch["金额"]]),
+                     "bal": num(r[ch["余额"]]), "ccy": r[ch["币种"]].strip(),
+                     "time": r[ch["创建时间"]].strip()})
+    cash["n"] = len(recs)
+    cash["first"], cash["last"] = min(x["time"] for x in recs), max(x["time"] for x in recs)
+    agg = defaultdict(lambda: defaultdict(float)); cnt = defaultdict(int)
+    for x in recs:
+        if x["amt"] is None: continue
+        agg[x["ccy"]][x["type"]] += x["amt"]; cnt[x["type"]] += 1
+    cash["by_type"] = {c: {t: round(v, 2) for t, v in d.items()} for c, d in agg.items()}
+    for ccy in agg:
+        cash["fees_by_ccy"][ccy] = round(sum(v for t, v in agg[ccy].items() if ("费用" in t or "佣金" in t)), 2)
+        cash["interest_by_ccy"][ccy] = round(sum(v for t, v in agg[ccy].items() if "利息" in t), 2)
+        cash["dividend_by_ccy"][ccy] = round(sum(v for t, v in agg[ccy].items() if "股息" in t), 2)
+        cash["fund_by_ccy"][ccy] = round(sum(v for t, v in agg[ccy].items() if "基金" in t), 2)
+    for ccy in agg:
+        cash["transfers_in"][ccy] = round(sum(v for t, v in agg[ccy].items() if "资产迁移" in t), 2)
+        cash["fx"][ccy] = round(sum(v for t, v in agg[ccy].items() if "货币兑换" in t), 2)
+    cash["deposits"] = [{"time": x["time"], "ccy": x["ccy"], "amt": x["amt"], "type": x["type"]}
+                        for x in recs if x["type"] == "银行转存"]
+    cash["withdrawals"] = [{"time": x["time"], "ccy": x["ccy"], "amt": x["amt"], "type": x["type"]}
+                           for x in recs if x["type"] == "银行转取"]
+    last_of = {}
+    for x in sorted(recs, key=lambda y: y["time"]):
+        if x["bal"] is not None: last_of[x["ccy"]] = x["bal"]
+    cash["last_bal"] = last_of
+    # 恒等式：期初余额 + Σ全部金额 = 期末余额（期初 = 首条余额 − 首条金额）
+    acc_stat = {}
+    for ccy in last_of:
+        sub = sorted([y for y in recs if y["ccy"] == ccy], key=lambda y: y["time"])
+        total_amt = sum(y["amt"] for y in sub if y["amt"] is not None)
+        init_implied = last_of[ccy] - total_amt  # 恒等式推导的期初余额
+        t0 = sub[0]["time"]
+        ok = any(abs((x["bal"] or 0) - (x["amt"] or 0) - init_implied) < 0.05
+                 for x in sub if x["time"] == t0)
+        acc_stat[ccy] = {"first_bal_implied": round(init_implied, 2),
+                         "final_bal": last_of[ccy], "sum_amt": round(total_amt, 2),
+                         "chain_first_entry_consistent": ok}
+    cash["recon"] = acc_stat
+    cash["trade_cash_vs_fund"] = {}
+    for ccy in cash["by_type"]:
+        s = sum(v for t, v in cash["by_type"][ccy].items() if "成交" in t and "费用" not in t)
+        cash["trade_cash_vs_fund"][ccy] = {"fills_net": round(trade_cash_by_ccy.get(ccy, 0), 2),
+                                           "fund_net": round(s, 2), "diff": round(s - trade_cash_by_ccy.get(ccy, 0), 2)}
+
+# ============ FUTU 订单 ============
+orders = read_csv(RAW / "历史订单-保证金综合账户(1599)-20200101-20260922.csv")
+oh = {h: i for i, h in enumerate(orders[0])}
+orows = [r for r in orders[1:] if r and any(c.strip() for c in r)]
+o_stat = {"n": len(orows), "status": {}, "direction": {}, "fees_by_ccy": {}, "by_market": {}}
+for r in orows:
+    st = (r[oh["交易状态"]] or "?").strip()
+    o_stat["status"][st] = o_stat["status"].get(st, 0) + 1
+    dg = (r[oh["方向"]] or "?").strip()
+    o_stat["direction"][dg] = o_stat["direction"].get(dg, 0) + 1
+    ccy = (r[oh["币种"]] or "USD").strip()
+    fee = num(r[oh["合计费用"]]) if len(r) > oh["合计费用"] else None
+    if fee: o_stat["fees_by_ccy"][ccy] = round(o_stat["fees_by_ccy"].get(ccy, 0) + fee, 2)
+    mk = (r[oh["市场"]] or "?").strip()
+    o_stat["by_market"][mk] = o_stat["by_market"].get(mk, 0) + 1
+ds = {}
+for r in orows:
+    dg = (r[oh["方向"]] or "?").strip(); st = (r[oh["交易状态"]] or "?").strip()
+    ds.setdefault(st, {}); ds[st][dg] = ds[st].get(dg, 0) + 1
+o_stat["dir_status"] = ds
+o_stat["cancel_rate"] = round((o_stat["status"].get("已撤单", 0) + o_stat["status"].get("部成已撤", 0)) / max(o_stat["n"], 1), 4)
+
+f_monthly = {}
+for ev in fevents:
+    m = f_monthly.setdefault(ev["ccy"], {})
+    m[ev["date"][:7]] = round(m.get(ev["date"][:7], 0.0) + ev["pnl"], 2)
+f_years = {}
+for r in frows:
+    y = r[fh["成交时间"]][:4]; f_years[y] = f_years.get(y, 0) + 1
+
+def dist_stats(vals):
+    vals = [v for v in vals if v is not None]
+    if not vals: return None
+    win = [v for v in vals if v > 0]; loss = [v for v in vals if v < 0]
+    return {"n": len(vals), "win_rate": round(len(win) / len(vals), 4), "sum": round(sum(vals), 2),
+            "avg_win": round(sum(win) / len(win), 2) if win else None,
+            "avg_loss": round(sum(loss) / len(loss), 2) if loss else None,
+            "payoff": round((sum(win) / len(win)) / abs(sum(loss) / len(loss)), 2) if win and loss else None,
+            "max_win": round(max(vals), 2), "max_loss": round(min(vals), 2)}
+
+# ============ POEMS（Excel，口径不变但补全披露） ============
 wb = openpyxl.load_workbook(RAW / "Share Investment.xlsx", data_only=True, read_only=True)
-rows_of = {name: list(wb[name].iter_rows(values_only=True))
-           for name in ["Overall Summary", "SG Portfolio", "Day Trade", "Fee and Margin", "IndoStock"]}
+rows_of = {n: list(wb[n].iter_rows(values_only=True))
+           for n in ["Overall Summary", "SG Portfolio", "Day Trade", "Fee and Margin", "IndoStock"]}
 wb.close()
 
-# -- KPI from Overall Summary rows 4-6 --
+osr = rows_of["Overall Summary"]
 def kpi_row(i):
-    v = rows_of["Overall Summary"][i - 1]
+    v = osr[i - 1]
     return {"initial_deposit": clean(v[4]), "realized": clean(v[5]), "unrealized": clean(v[6]),
             "fees_paid": clean(v[7]), "equity": clean(v[8]), "net_gain": clean(v[9]),
             "return": clean(v[10]), "cash_balance": clean(v[2])}
-kpi = {"POEMS": dict(kpi_row(4), label="POEMS (SG Portfolio)"),
-       "FUTU": dict(kpi_row(5), label="FUTU (Excel 台账, 止于 2022-01)"),
-       "TOTAL": dict(kpi_row(6), label="Entire Portfolio")}
+kpi = {"POEMS": dict(kpi_row(4), label="POEMS（Excel 台账）",
+                     asof="台账维护止于 2022-01，此后 POEMS 交易未更新"),
+       "FUTU_CASHBOOK": dict(kpi_row(5), label="FUTU（旧台账，已弃用于 KPI）",
+                             asof="对应 2021-22 旧口径账户，与 1599 账户（2024-08 迁入设立）非连续，保留仅供对照"),
+       "TOTAL": dict(kpi_row(6), label="Entire Portfolio（旧台账合计，已弃用）",
+                     asof="同上")}
 
-# -- 月度矩阵 (Overall Summary rows 11-20, 22-23) --
-osr = rows_of["Overall Summary"]
 months = []
 for v in osr[10]:
     d = excel_date(v)
     if d and re.match(r"20\d\d-\d\d", d): months.append(d[:7])
-
 def series_row(i):
-    """返回该行按 months 对齐的值；起点=该行第2个文本标签之后的第一个数值。"""
-    v = osr[i - 1]
-    text_seen, start = 0, None
+    v = osr[i - 1]; text_seen = 0; start = None
     for j, c in enumerate(v):
-        if isinstance(c, str) and c.strip() and c.strip() not in ERR_TOKENS:
-            text_seen += 1
-        elif isinstance(c, (int, float)) and text_seen >= 2:
-            start = j; break
+        if isinstance(c, str) and c.strip() and c.strip() not in ERR_TOKENS: text_seen += 1
+        elif isinstance(c, (int, float)) and text_seen >= 2: start = j; break
     start = start if start is not None else 3
     outv = []
     for k in range(len(months)):
         x = v[start + k] if start + k < len(v) else None
         outv.append(clean(x) if isinstance(x, (int, float)) else (0 if x is None else None))
     return outv
-
 series = {"POEMS_regular": series_row(12), "POEMS_day": series_row(13), "POEMS_sub": series_row(14),
           "FUTU_regular": series_row(15), "FUTU_day": series_row(16), "FUTU_sub": series_row(17),
           "TOTAL_sub": series_row(20)}
 bench = {}
-for r, nm in [(42, "HSI"), (43, "DJI"), (44, "NASDAQ"), (45, "SPX")]:
-    v = osr[r - 1]
-    text_seen, start = 0, None
+for r_, nm in [(42, "HSI"), (43, "DJI"), (44, "NASDAQ"), (45, "SPX")]:
+    v = osr[r_ - 1]
+    ts, start = 0, None
     for j, c in enumerate(v):
-        if isinstance(c, str) and c.strip(): text_seen += 1
-        elif isinstance(c, (int, float)) and text_seen >= 1:
-            start = j; break
+        if isinstance(c, str) and c.strip(): ts += 1
+        elif isinstance(c, (int, float)) and ts >= 1: start = j; break
     start = start if start is not None else 3
     bench[nm] = [clean(v[start + k]) if isinstance(v[start + k], (int, float)) else None
                  for k in range(len(months)) if start + k < len(v)]
 
-# -- SG Portfolio 历史平仓交易 --
 sg = rows_of["SG Portfolio"]
 closed = []
 for r in sg:
@@ -114,15 +293,12 @@ for r in sg:
                    "current_price": g(10), "gain_loss": g(11), "pl_pct": g(12), "exit_price": g(13),
                    "open_date": excel_date(r[14]) if len(r) > 14 else None,
                    "close_date": excel_date(r[15]) if len(r) > 15 else None, "holding_days": g(16)})
-
-# -- SG Portfolio 当前持仓 (Current Transactions 区块, 止于 Worst Scenario) --
 open_pos, started = [], False
 for r in sg:
-    row_txt = " ".join(str(x) for x in r if x) if r else ""
     if not started:
         if len(r) > 1 and clean(r[1]) == "Current Transactions": started = True
         continue
-    if "Worst Scenario" in row_txt or (r and any(isinstance(x, str) and "Worst Scenario" in x for x in r)): break
+    if any(isinstance(x, str) and "Worst Scenario" in x for x in r if x): break
     no = as_int(clean(r[1])) if len(r) > 1 else None
     if no is None: continue
     g = lambda i: clean(r[i]) if len(r) > i else None
@@ -131,8 +307,6 @@ for r in sg:
                      "investment_usd": g(10), "current_price": g(11), "book_gain_loss": g(12),
                      "pl_pct": g(13), "open_date": excel_date(r[18]) if len(r) > 18 else None,
                      "holding_days": g(21)})
-
-# -- IndoStock --
 ind = []
 for r in rows_of["IndoStock"][7:]:
     g = lambda i: clean(r[i]) if len(r) > i else None
@@ -141,117 +315,38 @@ for r in rows_of["IndoStock"][7:]:
                 "fee": g(6), "avg_price": g(7), "total": g(8), "current_price": g(9),
                 "gain_loss": g(10), "pl_pct": g(11), "date": excel_date(r[12]) if len(r) > 12 else None,
                 "status": g(13)})
-
-# -- Fee and Margin --
 margin = {}
 for r in rows_of["Fee and Margin"]:
     if len(r) < 4: continue
     k, val = clean(r[2]), clean(r[3])
     if k in ("Forex SGD to USD", "Cash Balance", "Equity Balance", "Margin Call", "Force Selling"):
         margin[k] = val
-
-# -- Day Trade --
 dt_rows = []
 for r in rows_of["Day Trade"][3:]:
     g = lambda i: clean(r[i]) if len(r) > i else None
     if any(isinstance(x, str) and x.strip() in ("(USD)", "Amount") for x in r if x): break
     no = as_int(g(2))
     if no is None: continue
+    gain = g(13); loss = g(16)
     dt_rows.append({"no": no, "date": excel_date(r[3]) if len(r) > 3 else None, "name": g(4),
                     "ccy": g(5), "grade": g(6), "buy": g(7), "qty": g(8), "fee": g(9),
-                    "avg": g(10), "invest": g(11), "sell": g(12), "gain": g(13), "p_pct": g(14),
-                    "stop": g(15), "loss": g(16), "l_pct": g(17),
-                    "pnl": (g(13) or 0) + (g(16) or 0) if (g(13) is not None or g(16) is not None) else None})
+                    "avg": g(10), "invest": g(11), "sell": g(12), "gain": gain, "p_pct": g(14),
+                    "stop": g(15), "loss": loss, "l_pct": g(17),
+                    "pnl": (gain or 0) + (loss or 0) if (gain is not None or loss is not None) else None})
 
-# ---------------- FUTU CSV ----------------
-def read_csv(p):
-    return list(csv.reader(p.read_text(encoding="utf-8-sig").splitlines()))
-
-fills = read_csv(RAW / "历史成交-保证金综合账户(1599)-20200101-20260922.csv")
-fh = {h: i for i, h in enumerate(fills[0])}
-fut_trades = []
-for r in fills[1:]:
-    if not r or len(r) < 8: continue
-    fut_trades.append({"code": r[fh["代码"]].strip(), "name": r[fh["名称"]].strip(),
-                       "side": r[fh["方向"]].strip(), "qty": num(r[fh["成交数量"]]),
-                       "price": num(r[fh["成交价格"]]), "amount": num(r[fh["成交金额"]]),
-                       "time": r[fh["成交时间"]].strip(), "market": r[fh["市场"]].strip(),
-                       "ccy": r[fh["币种"]].strip()})
-fut_trades.sort(key=lambda t: t["time"])
-
-lots = {}; realized_total = 0.0; per_code = {}; sell_events = []
-for t in fut_trades:
-    c = t["code"]
-    d = per_code.setdefault(c, {"name": t["name"], "market": t["market"], "ccy": t["ccy"],
-                                "buy_amt": 0.0, "sell_amt": 0.0, "buy_qty": 0.0, "sell_qty": 0.0,
-                                "n_fills": 0, "realized": 0.0, "closed_events": 0, "wins": 0})
-    d["n_fills"] += 1
-    if t["side"] == "买入":
-        d["buy_amt"] += t["amount"]; d["buy_qty"] += t["qty"]
-        lots.setdefault(c, deque()).append([t["qty"], t["price"]])
-    else:
-        d["sell_amt"] += t["amount"]; d["sell_qty"] += t["qty"]
-        q, px, pnl = t["qty"], t["price"], 0.0
-        dq = lots.get(c, deque())
-        while q > 1e-9 and dq:
-            lot = dq[0]; take = min(q, lot[0]); pnl += take * (px - lot[1]); lot[0] -= take; q -= take
-            if lot[0] <= 1e-9: dq.popleft()
-        d["realized"] += pnl; d["closed_events"] += 1
-        if pnl > 0: d["wins"] += 1
-        realized_total += pnl
-        sell_events.append({"date": t["time"][:10].replace("/", "-"), "code": c, "name": t["name"],
-                            "qty": t["qty"], "price": t["price"], "pnl": round(pnl, 2), "ccy": t["ccy"]})
-
-last_px = {}
-for t in fut_trades:
-    last_px[t["code"]] = t["price"]
-futu_open = {c: {"qty": round(sum(l[0] for l in dq), 2),
-                 "last_price": last_px.get(c),
-                 "avg_cost": round(sum(l[0] * l[1] for l in dq) / max(sum(l[0] for l in dq), 1e-9), 4)}
-             for c, dq in lots.items() if dq}
-
-orders = read_csv(RAW / "历史订单-保证金综合账户(1599)-20200101-20260922.csv")
-oh = {h: i for i, h in enumerate(orders[0])}
-o_stat = {"n": 0, "status": {}, "fees_by_ccy": {}, "by_market": {}}
-for r in orders[1:]:
-    if not r or len(r) <= oh["合计费用"]: continue
-    o_stat["n"] += 1
-    st = r[oh["交易状态"]] or "?"
-    o_stat["status"][st] = o_stat["status"].get(st, 0) + 1
-    ccy = (r[oh["币种"]] or "USD").strip()
-    fee = num(r[oh["合计费用"]])
-    if fee: o_stat["fees_by_ccy"][ccy] = round(o_stat["fees_by_ccy"].get(ccy, 0) + fee, 2)
-    mk = (r[oh["市场"]] or "?").strip()
-    o_stat["by_market"][mk] = o_stat["by_market"].get(mk, 0) + 1
-o_stat["cancel_rate"] = round((o_stat["status"].get("已撤单", 0) + o_stat["status"].get("部成已撤", 0)) / max(o_stat["n"], 1), 4)
-
-fut_monthly = {}
-for ev in sell_events:
-    m = fut_monthly.setdefault(ev["ccy"], {}).setdefault(ev["date"][:7], 0.0)
-    fut_monthly[ev["ccy"]][ev["date"][:7]] = round(m + ev["pnl"], 2)
-fut_years = {}
-for t in fut_trades:
-    y = t["time"][:4]
-    fut_years[y] = fut_years.get(y, 0) + 1
-
-# ---------------- stats & assemble ----------------
-def dist_stats(vals):
-    vals = [v for v in vals if v is not None]
-    if not vals: return None
-    win = [v for v in vals if v > 0]; loss = [v for v in vals if v < 0]
-    return {"n": len(vals), "win_rate": round(len(win) / len(vals), 4), "sum": round(sum(vals), 2),
-            "avg_win": round(sum(win) / len(win), 2) if win else None,
-            "avg_loss": round(sum(loss) / len(loss), 2) if loss else None,
-            "payoff": round((sum(win) / len(win)) / abs(sum(loss) / len(loss)), 2) if win and loss else None,
-            "max_win": round(max(vals), 2), "max_loss": round(min(vals), 2)}
-
-poems_ccy = {}
-for t in closed:
-    poems_ccy.setdefault(t["ccy"] or "?", []).append(t["gain_loss"])
-grade_stats = {}
+# POEMS 明细 vs 矩阵勾稽
+matrix_sum = round(sum(x for x in series["POEMS_sub"] if x), 2)
+closed_sum = round(sum(t["gain_loss"] for t in closed if t["gain_loss"] is not None), 2)
+poems_recon = {"matrix_2020_03_to_2022_01": matrix_sum,
+               "detail_all_158": closed_sum,
+               "detail_after_2022_01": round(sum(t["gain_loss"] for t in closed
+                                                 if t["close_date"] and t["close_date"] > "2022-01"
+                                                 and t["gain_loss"] is not None), 2)}
+poems_ccy = defaultdict(list)
+for t in closed: poems_ccy[t["ccy"] or "?"].append(t["gain_loss"])
+grade_stats = defaultdict(list)
 for t in dt_rows:
-    if t["pnl"] is not None:
-        grade_stats.setdefault(t["grade"] or "?", []).append(t["pnl"])
+    if t["pnl"] is not None: grade_stats[t["grade"] or "?"].append(t["pnl"])
 market_split = {}
 for t in closed:
     a = market_split.setdefault(t["market"] or "?", {"n": 0, "pl": 0.0})
@@ -260,43 +355,80 @@ for t in closed:
 hd = [t["holding_days"] for t in closed if t["holding_days"] is not None]
 
 def equity_curve(dep, subs):
-    cash, peak, mdd, curve = dep, dep, 0.0, []
+    cash_, peak, mdd, curve = dep, dep, 0.0, []
     for x in subs:
-        cash += x or 0.0
-        peak = max(peak, cash); mdd = max(mdd, (peak - cash) / peak if peak else 0.0)
-        curve.append(round(cash, 2))
+        cash_ += x or 0.0; peak = max(peak, cash_)
+        mdd = max(mdd, (peak - cash_) / peak if peak else 0.0)
+        curve.append(round(cash_, 2))
     return curve, round(mdd, 4)
-
 poems_curve, poems_mdd = equity_curve(kpi["POEMS"]["initial_deposit"], series["POEMS_sub"])
-futu_curve, futu_mdd = equity_curve(kpi["FUTU"]["initial_deposit"], series["FUTU_sub"])
-total_curve, total_mdd = equity_curve(kpi["TOTAL"]["initial_deposit"], series["TOTAL_sub"])
 
-def monthly_pnl_map(dates, amounts):
-    m = {}
-    for dt_, am in zip(dates, amounts):
-        if dt_ and am is not None:
-            k = dt_[:7]; m[k] = round(m.get(k, 0.0) + am, 2)
-    return m
-
-poems_monthly_ccy = {c: monthly_pnl_map([t["close_date"] for t in closed if t["ccy"] == c],
-                                        [t["gain_loss"] for t in closed if t["ccy"] == c])
-                     for c in {t["ccy"] for t in closed}}
+# ============ FUTU 账户级净值（资金明细口径，双视图交叉验证） ============
+futu_nav = None
+if cf:
+    end_usd = cash["last_bal"].get("USD", 0)
+    end_hkd = cash["last_bal"].get("HKD", 0)
+    L_usd = sum(x["last_price"] * x["qty"] for c, x in flong_book.items() if fsym[c]["ccy"] == "USD")
+    L_hkd = sum(x["last_price"] * x["qty"] for c, x in flong_book.items() if fsym[c]["ccy"] == "HKD")
+    S_usd = sum(x["last_price"] * x["qty"] for c, x in fshort_book.items() if fsym[c]["ccy"] == "USD")
+    S_hkd = sum(x["last_price"] * x["qty"] for c, x in fshort_book.items() if fsym[c]["ccy"] == "HKD")
+    equity_usd = end_usd + L_usd - S_usd + (end_hkd + L_hkd - S_hkd) * HKD_USD
+    mig_usd = cash["transfers_in"].get("USD", 0); mig_hkd = cash["transfers_in"].get("HKD", 0)
+    bank_net = sum(d["amt"] for d in cash["deposits"]) + sum(w["amt"] for w in cash["withdrawals"])
+    # 视图1 MOT：期末权益 − 迁入现金(折USD) − 银行净入金
+    pnl_mot = equity_usd - (mig_usd + mig_hkd * HKD_USD) - bank_net
+    # 视图2 交易层：已实现 + 浮动 + 利息/融券费 + 股息净 + 手续费 + 基金净
+    real_usd_eq = realized_by_ccy.get("USD", 0) + realized_by_ccy.get("HKD", 0) * HKD_USD
+    float_usd_eq = float_by_ccy.get("USD", 0) + float_by_ccy.get("HKD", 0) * HKD_USD
+    cost_usd_eq = cash["interest_by_ccy"].get("USD", 0) + cash["interest_by_ccy"].get("HKD", 0) * HKD_USD \
+        + cash["fees_by_ccy"].get("USD", 0) + cash["fees_by_ccy"].get("HKD", 0) * HKD_USD
+    div_usd_eq = (cash["dividend_by_ccy"].get("USD", 0)
+                  + cash["dividend_by_ccy"].get("HKD", 0) * HKD_USD)
+    fund_usd_eq = cash["fund_by_ccy"].get("USD", 0)
+    pnl_tradeview = real_usd_eq + float_usd_eq + cost_usd_eq + div_usd_eq + fund_usd_eq
+    futu_nav = {
+        "fx_rate": HKD_USD,
+        "end_cash": {"USD": end_usd, "HKD": end_hkd},
+        "positions_mv": {"long_usd": round(L_usd, 2), "long_hkd": round(L_hkd, 2),
+                         "short_usd": round(S_usd, 2), "short_hkd": round(S_hkd, 2)},
+        "equity_usd": round(equity_usd, 2),
+        "capital": {"migration_usd": mig_usd, "migration_hkd": mig_hkd,
+                    "migration_usd_equiv": round(mig_usd + mig_hkd * HKD_USD, 2),
+                    "bank_net_usd": round(bank_net, 2)},
+        "pnl_mot_usd": round(pnl_mot, 2),
+        "pnl_tradeview_usd": round(pnl_tradeview, 2),
+        "views_gap_usd": round(pnl_mot - pnl_tradeview, 2),
+        "components_usd": {"realized": round(real_usd_eq, 2), "unrealized": round(float_usd_eq, 2),
+                           "fees_interest": round(cost_usd_eq, 2), "dividends_net": round(div_usd_eq, 2),
+                           "mmf_net": round(fund_usd_eq, 2)},
+    }
 
 analytics = {
     "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    "revision": 2,
+    "changelog": [
+        "v2 修正：'卖空'方向此前被误当'买入'（SBUX 实际亏 9,486 被记为 -705、01519 实际盈 4,500 被记为 -4,540）",
+        "v2 修正：USD/HKD 不再混加，全部分币种核算",
+        "v2 并入资金明细（2024-08→2026-09，1082 条），FUTU KPI 改账户级净值口径；Excel 旧台账（本金9500/亏4260）标注为 2021-22 旧口径，不再用于 KPI",
+        "v2 补充：融券费 1,091、融资利息 298、卖空股息 955 等订单表不含的成本已计入",
+    ],
     "caveats": [
-        "POEMS 历史成交的股票名称在源文件中为损坏公式(#VALUE!)，已无法恢复，仅保留编号/市场/币种。",
-        "POEMS 成交金额混合 USD/HKD 等币种，跨币种合计仅为名义近似值，统计已按币种拆分。",
-        "Day Trade 表大部分行缺失日期，时间序列统计仅覆盖有日期的行。",
-        "Excel『Overall Summary』台账中 FUTU 部分更新至 2022-01；2024-08 之后的 FUTU 交易仅存在于 CSV 导出中，两套口径并存。",
-        "FUTU CSV 逐笔 FIFO 毛利与 Excel 自记已实现净利(含费用)存在口径差异。",
-        "数据截至 2026-09-22（导出时点），当前价格为最后记录值，非实时行情。",
+        "POEMS 历史成交的股票名称在源文件中为损坏公式(#VALUE!)，无法恢复；历史成交以编号+市场+币种标识。",
+        "POEMS 成交金额混合 USD/HKD/IDR，所有统计均按币种拆分，不相加。",
+        "POEMS/Excel 台账维护止于 2022-01；2022-01 之后 POEMS 平仓明细与矩阵差额见 poems_recon。",
+        "Day Trade 明细区（109 笔，净 +1,125.46）与表内汇总区（73 笔，净 +581.78）不一致，系台账后期扩充未同步；仪表盘以明细为准并标注。",
+        "FUTU 1599 账户于 2024-08-03 由资产迁移设立：迁入带来 16,000 股未见于成交记录的持仓（含 01519 空头 8000@迁移价），已按成交时间线自洽记账；该部分真实成本基线以迁移现金轧差体现，标注为近似。",
+        "FUTU 交易层'卖出无多可平'的 8,000 股（01519）在定稿模型中按保证金账户惯例转为开空批次，期末空单 8000@4.78 与迁移记录吻合。",
+        "资金明细逐条余额链存在 128 处跨币种/多腿记录不闭合（主要为换汇、迁移多腿），但期初+全部金额=期末 恒等式在 USD/HKD 分别成立（见 cash.recon）。",
+        "资产净值 HKD→USD 折算用参考汇率 0.12875（2026-09），仅用于展示层合计；所有交易与盈亏统计均为分币种原值。",
+        "数据截至 2026-09-22（成交导出）/ 2026-09-23（资金明细导出）；'现价'为最后成交价，非实时行情。",
     ],
     "kpi": kpi,
-    "equity": {"months": months, "POEMS": poems_curve, "FUTU": futu_curve, "TOTAL": total_curve,
-               "mdd": {"POEMS": poems_mdd, "FUTU": futu_mdd, "TOTAL": total_mdd}},
-    "poems_monthly_from_trades": poems_monthly_ccy,
-    "monthly": {"months": months, **series, "benchmark": bench},
+    "futu_nav": futu_nav,
+    "equity": {"months": months, "POEMS": poems_curve, "mdd": {"POEMS": poems_mdd},
+               "poems_recon": poems_recon},
+    "monthly": {"months": months, **series, "benchmark": bench,
+                "scope_note": "矩阵为 Excel 台账 2020-03→2022-01，FUTU 列系旧账户口径；FUTU 1599 账户真实月度盈亏见 futu.monthly（资金/成交口径，2024-08→）"},
     "poems": {"closed_trades": closed,
               "closed_stats_by_ccy": {c: dist_stats(v) for c, v in poems_ccy.items()},
               "open_positions": open_pos,
@@ -305,25 +437,36 @@ analytics = {
                                        ">180": sum(1 for x in hd if x > 180)},
               "market_split": market_split, "margin": margin, "indostock": ind},
     "day_trade": {"trades": dt_rows, "stats_by_grade": {g: dist_stats(v) for g, v in grade_stats.items()},
-                  "overall": dist_stats([t["pnl"] for t in dt_rows])},
-    "futu": {"n_fills": len(fut_trades),
-             "first_fill": fut_trades[0]["time"] if fut_trades else None,
-             "last_fill": fut_trades[-1]["time"] if fut_trades else None,
-             "realized_fifo_gross": round(realized_total, 2),
-             "per_symbol": {c: {k: (round(v, 2) if isinstance(v, float) else v) for k, v in d.items()} for c, d in per_code.items()},
-             "sell_event_stats": dist_stats([e["pnl"] for e in sell_events]),
-             "sell_events": sell_events,
-             "open_positions": futu_open, "orders": o_stat,
-             "monthly_realized": fut_monthly, "fills_by_year": fut_years},
+                  "overall": dist_stats([t["pnl"] for t in dt_rows]),
+                  "ledger_summary": {"gain_n": 56, "gain": 5906.82, "loss_n": 17, "loss": -5325.04,
+                                     "total_n": 73, "total": 581.78,
+                                     "note": "与明细区(109笔/净1125.46)不一致，明细为准"}},
+    "futu": {"n_fills": len(frows), "first_fill": frows[0][fh["成交时间"]], "last_fill": frows[-1][fh["成交时间"]],
+             "directions": {k: sum(1 for r in frows if r[fh["方向"]] == k) for k in ("买入", "卖出", "卖空")},
+             "realized_by_ccy": {k: round(v, 2) for k, v in realized_by_ccy.items()},
+             "trade_cash_by_ccy": {k: round(v, 2) for k, v in trade_cash_by_ccy.items()},
+             "float_by_ccy": {k: round(v, 2) for k, v in float_by_ccy.items()},
+             "sell_event_stats": dist_stats([e["pnl"] for e in fevents if e["type"] == "平多"] +
+                                            [e["pnl"] for e in fevents if e["type"] == "平空"]),
+             "per_symbol": {c: {k: (round(v, 2) if isinstance(v, float) else v) for k, v in e.items()}
+                            | {"open_long": bal(c, "L"), "long_avg": wavg(c, "L"),
+                               "open_short": bal(c, "S"), "short_avg": wavg(c, "S"),
+                               "last_price": last_px.get(c)}
+                            for c, e in fsym.items()},
+             "long_book": flong_book, "short_book": fshort_book,
+             "events": fevents, "orders": o_stat, "monthly": f_monthly, "fills_by_year": f_years,
+             "cash": cash, "sell_opened_short_qty": sell_opened_short},
 }
-
 (OUT / "analytics.json").write_text(json.dumps(analytics, ensure_ascii=False), encoding="utf-8")
-with open(OUT / "poems_closed_trades.csv", "w", newline="", encoding="utf-8-sig") as f:
-    w = csv.DictWriter(f, fieldnames=list(closed[0].keys())); w.writeheader(); w.writerows(closed)
-with open(OUT / "futu_sell_realized.csv", "w", newline="", encoding="utf-8-sig") as f:
-    w = csv.DictWriter(f, fieldnames=list(sell_events[0].keys())); w.writeheader(); w.writerows(sell_events)
+with open(OUT / "futu_realized_events.csv", "w", newline="", encoding="utf-8-sig") as fp:
+    w = csv.DictWriter(fp, fieldnames=list(fevents[0].keys())); w.writeheader(); w.writerows(fevents)
+with open(OUT / "poems_closed_trades.csv", "w", newline="", encoding="utf-8-sig") as fp:
+    w = csv.DictWriter(fp, fieldnames=list(closed[0].keys())); w.writeheader(); w.writerows(closed)
 
-print("OK", (OUT / "analytics.json").stat().st_size, "bytes |",
-      "closed:", len(closed), "open:", len(open_pos), "daytrade:", len(dt_rows),
-      "futu_fills:", len(fut_trades), "fifo:", round(realized_total, 2),
-      "| months:", (months[0], months[-1]) if months else None)
+print("v2 OK", (OUT / "analytics.json").stat().st_size, "bytes")
+print("realized_by_ccy:", dict(realized_by_ccy))
+print("float_by_ccy:", dict(float_by_ccy))
+print("futu_nav:", json.dumps(futu_nav, ensure_ascii=False) if futu_nav else None)
+print("cash recon:", cash["recon"])
+print("trade vs fund:", cash["trade_cash_vs_fund"])
+print("poems_recon:", poems_recon)

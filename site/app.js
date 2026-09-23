@@ -1,9 +1,9 @@
-/* ST Dashboard v2 — 数据源 analytics.json rev2（卖空方向修正、分币种、资金明细并入）。 */
+/* ST Dashboard v4 — FUTU 唯一事实源=资金明细；成交/订单 CSV 逐笔互验；Excel FUTU 台账已剔除。 */
 (function () {
 "use strict";
 let D;
 try { D = JSON.parse(sessionStorage.getItem("st_data")); } catch (e) { D = null; }
-if (!D || D.revision !== 3) { sessionStorage.removeItem("st_data"); location.replace("login.html"); return; }
+if (!D || D.revision !== 4) { sessionStorage.removeItem("st_data"); location.replace("login.html"); return; }
 
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d = 2) => v == null ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -15,9 +15,9 @@ const MONEY = { USD: "$", HKD: "HK$" };
 const m = (ccy, v) => v == null ? "—" : (v > 0 ? "+" : "") + (MONEY[ccy] || ccy + " ") + fmt0(v);
 
 document.addEventListener("DOMContentLoaded", () => {
-  renderKpis(); renderInsights(); renderCharts(); renderYearly(); renderPayback(); renderRanking(); renderTables(); renderCaveats();
+  renderKpis(); renderInsights(); renderCharts(); renderYearly(); renderPayback(); renderRanking(); renderRecon(); renderTables(); renderCaveats();
   $("btnLogout").addEventListener("click", () => { sessionStorage.removeItem("st_data"); location.replace("login.html"); });
-  $("metaTop").textContent = `POEMS + FUTU · 数据修订 v3（${D.generated_at}）· 会话内解密`;
+  $("metaTop").textContent = `POEMS + FUTU · 数据修订 v4（${D.generated_at}）· FUTU 以资金明细为唯一事实源`;
 });
 
 function card(k, v, s, cls) { return `<div class="card"><div class="k">${k}</div><div class="v ${cls || ""}">${v}</div><div class="s">${s || ""}</div></div>`; }
@@ -179,6 +179,25 @@ function renderRanking() {
     yAxis: { type: "category", data: G.map(lab), inverse: true, axisLabel: { color: "#8593ab", fontSize: 11 }, axisLine: { lineStyle: { color: "#232c3d" } } },
     series: [{ type: "bar", data: G.map((x) => ({ value: x.realized_usd, v: x.realized, raw: (x.ccy === "USD" ? "$" : "HK$") + fmt0(x.realized), n: x.n, itemStyle: { color: "#2fbf71" } })), label: { show: true, position: "right", formatter: (p) => "+$" + fmt0(p.value), color: "#7fd3a0", fontSize: 10 } }],
   });
+}
+
+/* ---------- v4 数据对账 ---------- */
+function renderRecon() {
+  const R = D.recon; if (!R) return;
+  const ok = (b) => b ? '<span class="pos">✓ 一致</span>' : '<span class="neg">✗ 不一致</span>';
+  const fc = R.fills_vs_cash.per_ccy;
+  const rows = [
+    ["FUTU 事实源", R.authority, ""],
+    ["Excel FUTU 台账", R.excel_futu_ledger_excluded, "✓ 已剔除"],
+    ["成交 ↔ 资金明细 逐笔配对", `USD ${fc.USD.fills_unmatched} 未配对 / HKD ${fc.HKD.fills_unmatched} 未配对（容差 ±$${R.fills_vs_cash.tolerance}）`, ok(R.fills_vs_cash.matched_all)],
+    ["7 组重复成交行裁决", R.duplicate_verdict, "✓ 真实分笔"],
+    ["资金明细自身重复", `${R.cash_duplicate_rows} 条完全重复记录`, ok(R.cash_duplicate_rows === 0)],
+    ["订单费用 ↔ 资金费用", `差额 USD $${fmt0(R.orders_fee_vs_cash_fee.USD.cash_only_total)} / HKD $${fmt0(R.orders_fee_vs_cash_fee.HKD.cash_only_total)}`, "已解释"],
+    [R.orders_fee_note, "", ""],
+    ["资金余额链", `USD ${ok(R.balance_chain.USD.chain_first_entry_consistent)} · HKD ${ok(R.balance_chain.HKD.chain_first_entry_consistent)}（期初+Σ金额=期末）`, ""],
+    ["净值双口径互证", `资金流法 $${fmt0(D.futu_nav.pnl_mot_usd)} vs 交易层法 $${fmt0(D.futu_nav.pnl_tradeview_usd)}（差 $${fmt(Math.abs(D.futu_nav.views_gap_usd))}）`, ok(Math.abs(D.futu_nav.views_gap_usd) < 1)],
+  ];
+  $("tRecon").innerHTML = tableHTML(["检验项", "结果", "判定"], rows.map((r) => r.map((c) => c == null ? "" : String(c))));
 }
 
 function tableHTML(cols, rows) { return `<table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`; }

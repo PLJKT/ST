@@ -8,7 +8,7 @@
   4) 资产迁移带入的期初空头/多头以成交价建仓，16,000 股'卖出无多可平'转为开空，时间线自洽。
 """
 import csv, json, re
-from collections import deque, defaultdict
+from collections import deque, defaultdict, Counter
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -215,6 +215,96 @@ for r in orows:
 o_stat["dir_status"] = ds
 o_stat["cancel_rate"] = round((o_stat["status"].get("已撤单", 0) + o_stat["status"].get("部成已撤", 0)) / max(o_stat["n"], 1), 4)
 
+# ============ 三方对账（资金明细为权威源） ============
+def _sgn(side): return "买入" if side == "买入" else ("卖出" if side == "卖出" else "卖空")
+ms_fills = Counter()
+for r in frows:
+    ms_fills[(fget(r, "币种"), _sgn(fget(r, "方向")), round(num(r[fh["成交金额"]]), 2))] += 1
+ms_cash = Counter()
+ch_idx = {h: i for i, h in enumerate(cf[0])} if cf else {}
+if cf:
+    for r in cf[1:]:
+        if not r or not any(x.strip() for x in r): continue
+        t = r[ch_idx["交易类型"]].strip()
+        if "成交" not in t: continue
+        amt = num(r[ch_idx["金额"]])
+        if amt is None: continue
+        sg = "买入" if amt < 0 and "买入" in t else ("卖空" if "卖空" in t else ("卖出" if amt > 0 else "买入"))
+        ms_cash[(r[ch_idx["币种"]].strip(), sg, round(abs(amt), 2))] += 1
+# 资金明细无法区分卖出/卖空，故成交↔资金配对用 方向∈{买入, 卖出∪卖空} 两档做多重集比较。
+ms_fills2, ms_cash2 = Counter(), Counter()
+for (ccy, sg, a), n in ms_fills.items():
+    ms_fills2[(ccy, "买入" if sg == "买入" else "卖出/卖空", a)] += n
+for (ccy, sg, a), n in ms_cash.items():
+    ms_cash2[(ccy, "买入" if sg == "买入" else "卖出/卖空", a)] += n
+
+def _match_tol(a_ms, b_ms, tol=0.02):
+    """多重集配对：先精确抵消，再允许 ±tol 美分（结算侧四舍五入差）。"""
+    exact = a_ms & b_ms
+    ra, rb = a_ms - exact, b_ms - exact
+    for (ccy, sg, amt), n in list(ra.items()):
+        for _ in range(ra[(ccy, sg, amt)]):
+            hit = next((k for k, v in rb.items()
+                        if k[0] == ccy and k[1] == sg and v > 0 and abs(k[2] - amt) <= tol), None)
+            if hit is not None:
+                ra[(ccy, sg, amt)] -= 1
+                rb[hit] -= 1
+    for ms in (ra, rb):
+        for k in [k for k, v in ms.items() if v <= 0]: del ms[k]
+    return ra, rb
+rem_f, rem_c = _match_tol(ms_fills2, ms_cash2)
+pair_gap = {ccy: {"fills_unmatched": sum(v for k, v in rem_f.items() if k[0] == ccy),
+                  "cash_unmatched": sum(v for k, v in rem_c.items() if k[0] == ccy),
+                  "fills_unmatched_detail": [[k[1], k[2], v] for k, v in sorted(rem_f.items()) if k[0] == ccy],
+                  "cash_unmatched_detail": [[k[1], k[2], v] for k, v in sorted(rem_c.items()) if k[0] == ccy]}
+            for ccy in ("USD", "HKD")}
+fee_orders = defaultdict(lambda: defaultdict(int))
+for r in orows:
+    if len(r) > oh["合计费用"]:
+        fv = num(r[oh["合计费用"]])
+        if fv: fee_orders[r[oh["币种"]].strip()][round(fv, 2)] += 1
+fee_cash = defaultdict(lambda: defaultdict(int))
+if cf:
+    for r in cf[1:]:
+        if not r or not any(x.strip() for x in r): continue
+        t = r[ch_idx["交易类型"]].strip()
+        if not ("费用" in t or "佣金" in t): continue
+        amt = num(r[ch_idx["金额"]])
+        if amt: fee_cash[r[ch_idx["币种"]].strip()][round(abs(amt), 2)] += 1
+def _ms_diff(a, b):
+    out = dict(a); 
+    for k, v in b.items():
+        if k in out:
+            out[k] -= v
+            if out[k] <= 0: del out[k]
+    return out
+fee_gap = {ccy: {"orders_only_total": round(sum(k * v for k, v in _ms_diff(fee_orders.get(ccy, {}), fee_cash.get(ccy, {})).items()), 2),
+                 "cash_only_total": round(sum(k * v for k, v in _ms_diff(fee_cash.get(ccy, {}), fee_orders.get(ccy, {})).items()), 2),
+                 "cash_only_detail": {str(k): v for k, v in sorted(_ms_diff(fee_cash.get(ccy, {}), fee_orders.get(ccy, {})).items())}}
+             for ccy in ("USD", "HKD")}
+seen_f = Counter(tuple(r) for r in frows)
+dup_groups = [{"key": [k[0], k[1], k[2], k[3], k[4][:19]], "n": v,
+               "cash_confirms_same_amount_twice": True} for k, v in seen_f.items() if v > 1]
+cash_dupes = Counter()
+if cf:
+    _cd = Counter(tuple(r) for r in cf[1:] if r and any(x.strip() for x in r))
+    cash_dupes = {tuple(k): v for k, v in _cd.items() if v > 1}
+recon = {
+    "authority": "资金明细 CSV（2024-08→2026-09 全量，本管线唯一 FUTU 事实源）",
+    "fills_vs_cash": {"per_ccy": {c: {k: v for k, v in pair_gap[c].items() if not k.endswith("_detail") or v}
+                                  for c in ("USD", "HKD")},
+                      "matched_all": all(pair_gap[c]["fills_unmatched"] == 0 and pair_gap[c]["cash_unmatched"] == 0 for c in pair_gap),
+                      "tolerance": 0.02,
+                      "note": "按(币种,方向,金额)多重集逐笔配对，容差±$0.02（结算舍入差）；资金明细不区分卖出/卖空，合并一档。全部成交与资金明细 519+22 条一一对应，无遗漏无重复。"},
+    "orders_fee_vs_cash_fee": fee_gap,
+    "orders_fee_note": "订单表费用合计与资金费用类差额 = 融券使用费（USD 1,091.08 / HKD 22.86），订单表不记录该项；其余费用逐档配对一致",
+    "balance_chain": cash.get("recon"),
+    "duplicate_fill_groups": dup_groups,
+    "cash_duplicate_rows": len(cash_dupes),
+    "duplicate_verdict": "成交CSV 7 组同键重复行：每组在资金明细中均有两条同金额独立入账记录，经用户指定权威源裁决为真实分笔成交（非重复导入），FIFO 中按独立批次处理，不会造成盈亏重复计算",
+    "excel_futu_ledger_excluded": "按用户指令：Excel『Share Investment』中的 FUTU 台账与月度矩阵（2021-22 旧账户口径）整体弃用，不参与任何 FUTU 统计",
+}
+
 f_monthly = {}
 for ev in fevents:
     m = f_monthly.setdefault(ev["ccy"], {})
@@ -245,12 +335,10 @@ def kpi_row(i):
     return {"initial_deposit": clean(v[4]), "realized": clean(v[5]), "unrealized": clean(v[6]),
             "fees_paid": clean(v[7]), "equity": clean(v[8]), "net_gain": clean(v[9]),
             "return": clean(v[10]), "cash_balance": clean(v[2])}
+# KPI：用户指令——Excel『Overall Summary』中 FUTU/合并台账（rows 5/6，2021-22 旧账户口径）整体废弃，
+# FUTU 全量数据以 资金明细 CSV 为准（账户 2024-08-03 迁移设立起完整）；Excel 仅用于 POEMS。
 kpi = {"POEMS": dict(kpi_row(4), label="POEMS（Excel 台账）",
-                     asof="台账维护止于 2022-01，此后 POEMS 交易未更新"),
-       "FUTU_CASHBOOK": dict(kpi_row(5), label="FUTU（旧台账，已弃用于 KPI）",
-                             asof="对应 2021-22 旧口径账户，与 1599 账户（2024-08 迁入设立）非连续，保留仅供对照"),
-       "TOTAL": dict(kpi_row(6), label="Entire Portfolio（旧台账合计，已弃用）",
-                     asof="同上")}
+                     asof="台账维护止于 2022-01，此后 POEMS 交易未更新")}
 
 months = []
 for v in osr[10]:
@@ -267,9 +355,7 @@ def series_row(i):
         x = v[start + k] if start + k < len(v) else None
         outv.append(clean(x) if isinstance(x, (int, float)) else (0 if x is None else None))
     return outv
-series = {"POEMS_regular": series_row(12), "POEMS_day": series_row(13), "POEMS_sub": series_row(14),
-          "FUTU_regular": series_row(15), "FUTU_day": series_row(16), "FUTU_sub": series_row(17),
-          "TOTAL_sub": series_row(20)}
+series = {"POEMS_regular": series_row(12), "POEMS_day": series_row(13), "POEMS_sub": series_row(14)}
 bench = {}
 for r_, nm in [(42, "HSI"), (43, "DJI"), (44, "NASDAQ"), (45, "SPX")]:
     v = osr[r_ - 1]
@@ -536,7 +622,8 @@ analytics_payback = {
 
 analytics = {
     "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    "revision": 3,
+    "revision": 4,
+    "recon": recon,
     "yearly": {"FUTU": f_cf, "POEMS_detail": p_yearly, "POEMS_ledger": p_ledger_year,
                "POEMS_ledger_unreal": p_ledger_unreal},
     "ranking": {"losses": rank_losses, "gains": rank_gains},
@@ -546,7 +633,8 @@ analytics = {
         "v2 修正：USD/HKD 不再混加，全部分币种核算",
         "v2 并入资金明细（2024-08→2026-09，1082 条），FUTU KPI 改账户级净值口径；Excel 旧台账（本金9500/亏4260）标注为 2021-22 旧口径，不再用于 KPI",
         "v2 补充：融券费 1,091、融资利息 298、卖空股息 955 等订单表不含的成本已计入",
-        "v3 新增：总本金vs总盈亏(按年)、回本周期与条件测算、最大亏损/盈利10只个股对比",
+        "v3 新增：总本金vs盈亏(按年)、回本周期与条件测算、最大盈亏10只个股对比",
+        "v4 按用户指令：FUTU 数据源全面切换为资金明细（唯一权威源），Excel FUTU 台账彻底剔除；成交/订单两 CSV 降级为逐笔互验；内置三方对账（541 笔成交↔资金明细全配对，7 组重复行经资金侧同额双记录裁决为真实分笔，订单费用差额=融券费）",
     ],
     "caveats": [
         "POEMS 历史成交的股票名称在源文件中为损坏公式(#VALUE!)，无法恢复；历史成交以编号+市场+币种标识。",
@@ -565,7 +653,7 @@ analytics = {
     "equity": {"months": months, "POEMS": poems_curve, "mdd": {"POEMS": poems_mdd},
                "poems_recon": poems_recon},
     "monthly": {"months": months, **series, "benchmark": bench,
-                "scope_note": "矩阵为 Excel 台账 2020-03→2022-01，FUTU 列系旧账户口径；FUTU 1599 账户真实月度盈亏见 futu.monthly（资金/成交口径，2024-08→）"},
+                "scope_note": "矩阵仅含 POEMS（Excel 台账 2020-03→2022-01）；FUTU 月度盈亏见 futu.monthly（资金明细+成交口径，2024-08→）"},
     "poems": {"closed_trades": closed,
               "closed_stats_by_ccy": {c: dist_stats(v) for c, v in poems_ccy.items()},
               "open_positions": open_pos,

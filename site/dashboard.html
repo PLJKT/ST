@@ -53,12 +53,13 @@ footer{padding:24px 28px;color:var(--sub);font-size:12px;border-top:1px solid va
   <button id="btnLogout" title="清除本地会话数据">登 出</button>
 </header>
 <nav id="nav">
-  <a href="#overview">总览</a><a href="#equity">净值与收益</a><a href="#yearly">本金vs盈亏</a><a href="#payback">回本测算</a><a href="#ranking">盈亏榜</a><a href="#poems">POEMS 分析</a>
+  <a href="#overview">总览</a><a href="#recon">数据对账</a><a href="#equity">净值与收益</a><a href="#yearly">本金vs盈亏</a><a href="#payback">回本测算</a><a href="#ranking">盈亏榜</a><a href="#poems">POEMS 分析</a>
   <a href="#futu">FUTU 分析</a><a href="#positions">当前持仓</a><a href="#trades">交易明细</a><a href="#notes">口径与说明</a>
 </nav>
 <main>
 <section id="overview"><h2>账户总览</h2><div class="cards" id="kpis"></div></section>
 <section id="diagnosis"><h2>关键诊断（自动生成）</h2><div class="insight" id="insights"></div></section>
+<section id="recon"><h2>数据对账（FUTU 以资金明细为唯一事实源）</h2><div class="tw" id="tRecon"></div></section>
 <section id="equity"><h2>净值曲线与月度盈亏</h2>
   <div class="grid2">
     <div class="chart"><div class="box360" id="cEq"></div></div>

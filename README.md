@@ -11,14 +11,12 @@
 3. **会话隔离**：解密后的明文仅存在于当前标签页 `sessionStorage`，关闭标签页或点击「登出」即销毁。
 4. **无后门**：系统不存储任何凭据，密码即密钥——忘记密码无法找回，需重新运行 `scripts/build_vault.py` 重置。
 
-> 初始口令：`admin / admin@123`（请尽快用 `build_vault.py --password <新密码>` 重新生成 vault 并更新此处说明，勿把新密码提交进仓库）。
+> 登录口令：`admin / e%mX#fMh0CDGzxpKoOlP`（已于 2026-09-23 从默认口令更换。此文件位于私有仓库；公开仓库不含密码。改密命令：`python scripts/build_vault.py --password '<新密码>' --username admin`，并同步推送私有仓与公开仓的 vault。）
 
-## 使用
+## 访问方式
 
-```
-本地打开：双击 site/login.html（file:// 即可，vault.js 为离线加载回退）
-或本地服务：cd site && python -m http.server 8000 → http://localhost:8000
-```
+- **在线（GitHub Pages，公开站）**：https://pljkt.github.io/ST-Pages/ —— 页面与数据均为密文，登录时才在本机解密。
+- **本地**：双击 `site/login.html`（file:// 即可，vault.js 为离线加载回退）。
 
 ## 目录结构
 

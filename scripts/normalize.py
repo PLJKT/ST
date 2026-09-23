@@ -519,7 +519,6 @@ if cf:
             wd = sum(v for t, v in yt.items() if "转取" in t)
             mig = sum(v for t, v in yt.items() if "资产迁移" in t)
             row.setdefault("capital_" + ccy, {"deposit": round(dep, 2), "withdraw": round(wd, 2), "migration": round(mig, 2), "capital_net": round(dep + wd + mig, 2)})
-        row["realized_usd"] = round(row["realized_usd"], 2)
         row["other_usd"] = round(row["other_usd"], 2)
         f_cf[y] = row
     # 浮动盈亏（按币种折USD）无法可靠分摊到年，全记入最后一年并在 caveats 说明
@@ -566,23 +565,58 @@ for i, mm in enumerate(months):
     p_ledger_year[y] = round(p_ledger_year.get(y, 0) + v, 2)
 p_ledger_unreal = {"2022": round(kpi["POEMS"]["unrealized"], 2)}  # 台账期末快照浮亏
 
-# 个股盈亏榜（跨账户合并：POEMS 按名称分组、FUTU per_symbol，币种折算 USD 保留原值）
-ranking = {}
-def add_entry(key, label, account, ccy, realized):
-    r = ranking.setdefault(key, {"label": label, "account": account, "ccy": ccy,
-                                 "realized": 0.0, "realized_usd": 0.0, "n": 0})
-    r["realized"] += realized
-    r["realized_usd"] += realized * (1.0 if ccy == "USD" else HKD_USD)
-    r["n"] += 1
+# ---- 台账自带分股票盈亏汇总表（名称可恢复的关键发现）----
+def parse_pnl_block(rows, no_col, name_col, pl_col, loc_col):
+    """定位 No./Stock Name/P/L/Location 表头行，向下收集直到 Total/中断。"""
+    entries, started = [], False
+    for r in rows:
+        g = lambda i: clean(r[i]) if len(r) > i else None
+        if not started:
+            if g(no_col) == "No." and g(name_col) == "Stock Name": started = True
+            continue
+        n = as_int(g(no_col)); nm = g(name_col); pl = g(pl_col)
+        if n is None or not isinstance(nm, str) or not any(ch.isalpha() for ch in nm) or not isinstance(pl, (int, float)):
+            if g(no_col) in ("Total", None) and entries: break
+            continue
+        entries.append({"no": n, "name": nm.strip(), "pl": round(pl, 2), "loc": g(loc_col)})
+    return entries
+
+poems_named_regular = parse_pnl_block(sg, 10, 11, 12, 13)
+poems_named_day = parse_pnl_block(rows_of["Day Trade"], 12, 13, 14, 15)
+pnr_sum = round(sum(e["pl"] for e in poems_named_regular), 2)
+pnd_sum = round(sum(e["pl"] for e in poems_named_day), 2)
+
+# 个股盈亏榜（FUTU 已实现+浮动 / POEMS 台账分股票汇总，USD 折算排序，原币值保留）
+futu_upnl_usd = {}
+futu_upnl_usd = {}
+for c, d in flong_book.items():
+    futu_upnl_usd[c] = futu_upnl_usd.get(c, 0.0) + d["u_pnl"] * (1.0 if fsym[c]["ccy"] == "USD" else HKD_USD)
+for c, d in fshort_book.items():
+    futu_upnl_usd[c] = futu_upnl_usd.get(c, 0.0) + d["u_pnl"] * (1.0 if fsym[c]["ccy"] == "USD" else HKD_USD)
+ranking = []
 for c, e in fsym.items():
-    add_entry("FUTU:" + c, f"{c} {e['name']}", "FUTU", e["ccy"], e["realized"])
-for t in closed:
-    nm = t["name"] or ("(名称损坏)#" + str(t["no"]))
-    add_entry("POEMS:" + nm, nm, "POEMS", t["ccy"] or "USD", t["gain_loss"] or 0.0)
-ranking_list = [{"key": k, **{kk: (round(vv, 2) if isinstance(vv, float) else vv) for kk, vv in v.items()}}
-                for k, v in ranking.items()]
-rank_losses = sorted(ranking_list, key=lambda x: x["realized_usd"])[:10]
-rank_gains = sorted(ranking_list, key=lambda x: -x["realized_usd"])[:10]
+    if not (e["events"] or c in futu_upnl_usd): continue
+    fx = 1.0 if e["ccy"] == "USD" else HKD_USD
+    u = round(futu_upnl_usd.get(c, 0.0), 2)
+    r_usd = round(e["realized"] * fx, 2)
+    ranking.append({"label": f"{c} {e['name']}", "account": "FUTU", "src": "成交+FIFO模型",
+                    "ccy": e["ccy"], "realized": round(e["realized"], 2), "unrealized": u,
+                    "total_usd": round(r_usd + u, 2), "n": e["n"], "open": bal(c, "L") or bal(c, "S")})
+for e in poems_named_regular:
+    ranking.append({"label": e["name"], "account": "POEMS", "src": "台账分股票汇总(常规)",
+                    "ccy": "USD", "realized": e["pl"], "unrealized": None,
+                    "total_usd": e["pl"], "n": None, "open": None, "loc": e["loc"]})
+for e in poems_named_day:
+    ranking.append({"label": e["name"] + "(日内)", "account": "POEMS", "src": "台账分股票汇总(日内)",
+                    "ccy": "USD", "realized": e["pl"], "unrealized": None,
+                    "total_usd": e["pl"], "n": None, "open": None, "loc": e["loc"]})
+rank_losses = sorted(ranking, key=lambda x: x["total_usd"])[:10]
+rank_gains = sorted(ranking, key=lambda x: -x["total_usd"])[:10]
+ranking_note = {
+    "poems_regular_block_total": pnr_sum, "poems_day_block_total": pnd_sum,
+    "poems_named_entries": len(poems_named_regular) + len(poems_named_day),
+    "note": "POEMS 分股票盈亏改用台账自带的『Transaction History』汇总表（股票名完整；其合计 $%s/$%s 与逐笔明细口径存在费用差异，按台账原值展示并标注来源）；FUTU 盈亏=已实现+按最后成交价的浮动。" % (pnr_sum, pnd_sum),
+}
 
 # 回本测算（FUTU / POEMS / 合计）
 import math
@@ -626,7 +660,7 @@ analytics = {
     "recon": recon,
     "yearly": {"FUTU": f_cf, "POEMS_detail": p_yearly, "POEMS_ledger": p_ledger_year,
                "POEMS_ledger_unreal": p_ledger_unreal},
-    "ranking": {"losses": rank_losses, "gains": rank_gains},
+    "ranking": {"losses": rank_losses, "gains": rank_gains, "note": ranking_note},
     "payback": analytics_payback,
     "changelog": [
         "v2 修正：'卖空'方向此前被误当'买入'（SBUX 实际亏 9,486 被记为 -705、01519 实际盈 4,500 被记为 -4,540）",
@@ -635,9 +669,10 @@ analytics = {
         "v2 补充：融券费 1,091、融资利息 298、卖空股息 955 等订单表不含的成本已计入",
         "v3 新增：总本金vs盈亏(按年)、回本周期与条件测算、最大盈亏10只个股对比",
         "v4 按用户指令：FUTU 数据源全面切换为资金明细（唯一权威源），Excel FUTU 台账彻底剔除；成交/订单两 CSV 降级为逐笔互验；内置三方对账（541 笔成交↔资金明细全配对，7 组重复行经资金侧同额双记录裁决为真实分笔，订单费用差额=融券费）",
+        "v4.1 修复：前端 renderCharts 引用未定义变量导致其后全部图表空白的缺陷；每模块独立容错并显示错误横幅。盈亏榜改用台账自带分股票汇总（股票名完整恢复：APPLE/AMD/QUALCOMM/Zoom…）并将 FUTU 浮动盈亏并入排名口径（SQQQ 合计亏 $22,572 居首）",
     ],
     "caveats": [
-        "POEMS 历史成交的股票名称在源文件中为损坏公式(#VALUE!)，无法恢复；历史成交以编号+市场+币种标识。",
+        "POEMS 历史成交逐笔行的股票名称在源文件中为损坏公式(#VALUE!)；但台账自带『Transaction History』分股票汇总保留了完整名称，盈亏榜已改用该汇总（合计口径与逐笔明细存在费用差，见 ranking.note）。",
         "POEMS 成交金额混合 USD/HKD/IDR，所有统计均按币种拆分，不相加。",
         "POEMS/Excel 台账维护止于 2022-01；2022-01 之后 POEMS 平仓明细与矩阵差额见 poems_recon。",
         "Day Trade 明细区（109 笔，净 +1,125.46）与表内汇总区（73 笔，净 +581.78）不一致，系台账后期扩充未同步；仪表盘以明细为准并标注。",

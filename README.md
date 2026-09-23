@@ -13,6 +13,8 @@
 
 > 登录口令：`admin / e%mX#fMh0CDGzxpKoOlP`（已于 2026-09-23 从默认口令更换。此文件位于私有仓库；公开仓库不含密码。改密命令：`python scripts/build_vault.py --password '<新密码>' --username admin`，并同步推送私有仓与公开仓的 vault。）
 
+- **v3（2026-09-23）**：新增三张图：① 总本金 vs 总盈亏（按年，含累计本金线）；② 回本周期与条件测算（纯利滚 & 限期月定投两口径）；③ 最大亏损/盈利 10 只个股对比（跨账户，USD 折算排序）。
+
 ## 访问方式
 
 - **在线（GitHub Pages，公开站）**：https://pljkt.github.io/ST-Pages/ —— 页面与数据均为密文，登录时才在本机解密。

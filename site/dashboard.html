@@ -53,7 +53,7 @@ footer{padding:24px 28px;color:var(--sub);font-size:12px;border-top:1px solid va
   <button id="btnLogout" title="清除本地会话数据">登 出</button>
 </header>
 <nav id="nav">
-  <a href="#overview">总览</a><a href="#equity">净值与收益</a><a href="#poems">POEMS 分析</a>
+  <a href="#overview">总览</a><a href="#equity">净值与收益</a><a href="#yearly">本金vs盈亏</a><a href="#payback">回本测算</a><a href="#ranking">盈亏榜</a><a href="#poems">POEMS 分析</a>
   <a href="#futu">FUTU 分析</a><a href="#positions">当前持仓</a><a href="#trades">交易明细</a><a href="#notes">口径与说明</a>
 </nav>
 <main>
@@ -67,6 +67,27 @@ footer{padding:24px 28px;color:var(--sub);font-size:12px;border-top:1px solid va
     <div class="chart"><div class="box360" id="cFutuMonthly"></div></div>
   </div>
   <div class="note" id="eqNote"></div>
+</section>
+<section id="yearly"><h2>① 总本金 vs 总盈亏（按年份）</h2>
+  <div class="chart"><div class="box360" id="cYearly"></div></div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="tw" id="tYearlyFutu"></div>
+    <div class="tw" id="tYearlyPoems"></div>
+  </div>
+  <div class="note" id="yearlyNote"></div>
+</section>
+<section id="payback"><h2>② 回本周期与条件</h2>
+  <div class="grid2">
+    <div class="chart"><div class="box360" id="cPayback"></div></div>
+    <div class="tw" id="tPayback"></div>
+  </div>
+  <div class="note" id="paybackNote"></div>
+</section>
+<section id="ranking"><h2>③ 最大亏损 10 只 vs 最大盈利 10 只（跨账户，按 USD 折算排序）</h2>
+  <div class="grid2">
+    <div class="chart"><div class="box360" id="cTopLoss"></div></div>
+    <div class="chart"><div class="box360" id="cTopGain"></div></div>
+  </div>
 </section>
 <section id="poems"><h2>POEMS（ShareInvestment）分析</h2>
   <div class="grid2">

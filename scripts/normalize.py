@@ -403,14 +403,150 @@ if cf:
                            "mmf_net": round(fund_usd_eq, 2)},
     }
 
+# ============ v2.1 新增：分年本金/盈亏、回本测算、个股盈亏榜 ============
+FEE_DIV_TYPES = ("费用", "佣金", "利息", "融券", "股息", "利息税")
+def cf_yearly_by_type(recs):
+    agg = defaultdict(lambda: defaultdict(float))
+    for x in recs:
+        if x["amt"] is None: continue
+        agg[x["time"][:4]][x["type"]] += x["amt"]
+    return agg
+
+f_cf = {}
+if cf:
+    _cfh = {h: i for i, h in enumerate(cf[0])}
+    _cfrecs = [{"type": r[_cfh["交易类型"]].strip(), "amt": num(r[_cfh["金额"]]),
+                "ccy": r[_cfh["币种"]].strip(), "time": r[_cfh["创建时间"]].strip()}
+               for r in cf[1:] if r and any(x.strip() for x in r)]
+    ccy_year_type = {ccy: cf_yearly_by_type([x for x in _cfrecs if x["ccy"] == ccy])
+                     for ccy in ("USD", "HKD")}
+    # 逐年：已实现来自事件；费用/利息/股息来自资金流水；浮动归入最后事件年（caveats 已注明）
+    years = sorted(set([e["date"][:4] for e in fevents] + list(ccy_year_type.get("USD", {})) + list(ccy_year_type.get("HKD", {}))))
+    for y in years:
+        row = {"realized_usd": 0.0, "other_usd": 0.0}
+        for ccy in ("USD", "HKD"):
+            fx = 1.0 if ccy == "USD" else HKD_USD
+            row["realized_usd"] += sum(e["pnl"] for e in fevents if e["ccy"] == ccy and e["date"][:4] == y) * fx
+            yt = ccy_year_type.get(ccy, {}).get(y, {})
+            row["other_usd"] += sum(v for t, v in yt.items() if any(k in t for k in FEE_DIV_TYPES)) * fx
+            dep = sum(v for t, v in yt.items() if "转存" in t)
+            wd = sum(v for t, v in yt.items() if "转取" in t)
+            mig = sum(v for t, v in yt.items() if "资产迁移" in t)
+            row.setdefault("capital_" + ccy, {"deposit": round(dep, 2), "withdraw": round(wd, 2), "migration": round(mig, 2), "capital_net": round(dep + wd + mig, 2)})
+        row["realized_usd"] = round(row["realized_usd"], 2)
+        row["other_usd"] = round(row["other_usd"], 2)
+        f_cf[y] = row
+    # 浮动盈亏（按币种折USD）无法可靠分摊到年，全记入最后一年并在 caveats 说明
+    last_y = max(f_cf) if f_cf else None
+    if last_y:
+        fu = (float_by_ccy.get("USD", 0) + float_by_ccy.get("HKD", 0) * HKD_USD)
+        f_cf[last_y]["unrealized_usd"] = round(fu, 2)
+        f_cf[last_y]["pnl_usd_total"] = round(f_cf[last_y]["realized_usd"] + f_cf[last_y]["other_usd"] + fu, 2)
+    for y in f_cf:
+        f_cf[y].setdefault("unrealized_usd", None)
+        f_cf[y].setdefault("pnl_usd_total", round(f_cf[y]["realized_usd"] + f_cf[y]["other_usd"], 2))
+    # 当年总投入本金（累计口径：首年=期初余额+迁移+当年入金；此后=累计）
+    cum = 0.0
+    for y in sorted(f_cf):
+        cap = 0.0
+        for ccy in ("USD", "HKD"):
+            fx = 1.0 if ccy == "USD" else HKD_USD
+            yt = ccy_year_type.get(ccy, {}).get(y, {})
+            cap += sum(v for t, v in yt.items() if ("转存" in t or "转取" in t or "资产迁移" in t)) * fx
+        # 首年再加期初存量（若期初>0；本账户期初≈0）
+        f_cf[y]["capital_in_usd"] = round(cap, 2)
+        cum += cap
+        f_cf[y]["capital_cum_usd"] = round(cum, 2)
+
+# POEMS 分年（明细按 close_date / open_date；台账矩阵按 months）
+p_year = defaultdict(lambda: {"realized_usd": 0.0, "realized_hkd": 0.0, "unrealized_usd": 0.0,
+                              "open_positions": 0})
+for t in closed:
+    if t["close_date"] and t["gain_loss"] is not None:
+        k = "realized_usd" if t["ccy"] == "USD" else ("realized_hkd" if t["ccy"] == "HKD" else None)
+        if k: p_year[t["close_date"][:4]][k] += t["gain_loss"]
+for t in open_pos:
+    if t["open_date"]:
+        y = t["open_date"][:4]
+        p_year[y]["open_positions"] += 1
+        if t["book_gain_loss"] is not None:
+            if t["ccy"] == "USD": p_year[y]["unrealized_usd"] += t["book_gain_loss"]
+p_yearly = {y: {k: round(v, 2) for k, v in d.items()} for y, d in sorted(p_year.items())}
+# 台账矩阵分年合计（USD）
+p_ledger_year = {}
+for i, mm in enumerate(months):
+    y = mm[:4]
+    v = series["POEMS_sub"][i] or 0
+    p_ledger_year[y] = round(p_ledger_year.get(y, 0) + v, 2)
+p_ledger_unreal = {"2022": round(kpi["POEMS"]["unrealized"], 2)}  # 台账期末快照浮亏
+
+# 个股盈亏榜（跨账户合并：POEMS 按名称分组、FUTU per_symbol，币种折算 USD 保留原值）
+ranking = {}
+def add_entry(key, label, account, ccy, realized):
+    r = ranking.setdefault(key, {"label": label, "account": account, "ccy": ccy,
+                                 "realized": 0.0, "realized_usd": 0.0, "n": 0})
+    r["realized"] += realized
+    r["realized_usd"] += realized * (1.0 if ccy == "USD" else HKD_USD)
+    r["n"] += 1
+for c, e in fsym.items():
+    add_entry("FUTU:" + c, f"{c} {e['name']}", "FUTU", e["ccy"], e["realized"])
+for t in closed:
+    nm = t["name"] or ("(名称损坏)#" + str(t["no"]))
+    add_entry("POEMS:" + nm, nm, "POEMS", t["ccy"] or "USD", t["gain_loss"] or 0.0)
+ranking_list = [{"key": k, **{kk: (round(vv, 2) if isinstance(vv, float) else vv) for kk, vv in v.items()}}
+                for k, v in ranking.items()]
+rank_losses = sorted(ranking_list, key=lambda x: x["realized_usd"])[:10]
+rank_gains = sorted(ranking_list, key=lambda x: -x["realized_usd"])[:10]
+
+# 回本测算（FUTU / POEMS / 合计）
+import math
+def payback(cur, base, rates=(0.05, 0.08, 0.10, 0.12), horizons=(24, 36, 60)):
+    if not cur or not base or cur <= 0 or base <= 0 or cur >= base: return None
+    G = base - cur
+    pure = {}
+    for R in rates:
+        rm = (1 + R) ** (1 / 12) - 1
+        n = math.log(1 + G / cur) / math.log(1 + rm)
+        pure[f"{int(R*100)}%"] = {"months": round(n), "years": round(n / 12, 1)}
+    need = {}
+    for R in rates:
+        rm = (1 + R) ** (1 / 12) - 1
+        row = {}
+        for T in horizons:
+            growth = cur * ((1 + rm) ** T - 1)
+            ann = ((1 + rm) ** T - 1) / rm
+            C = (G - growth) / ann
+            row[f"{T}m"] = None if C <= 0 else round(C, 0)
+        need[f"{int(R*100)}%"] = row
+    return {"pure_compound": pure, "monthly_topup": need, "gap_usd": round(G, 2)}
+
+f_cur = futu_nav["equity_usd"] if futu_nav else None
+f_base = round((futu_nav["capital"]["migration_usd_equiv"] + futu_nav["capital"]["bank_net_usd"]), 2) if futu_nav else None
+p_cur = kpi["POEMS"]["equity"]; p_base = kpi["POEMS"]["initial_deposit"]
+analytics_payback = {
+    "FUTU": {"current": f_cur, "principal": f_base, "gap": round((f_base or 0) - (f_cur or 0), 2), "scenarios": payback(f_cur, f_base),
+             "note": "目标基数=迁移等值+银行净入金；pure_compound=现有权益自然复利回本所需时间；monthly_topup=若限期24/36/60个月回本，每月需追加的定投资额（含复利增益抵扣）"},
+    "POEMS": {"current": p_cur, "principal": p_base, "gap": round(p_base - p_cur, 2), "scenarios": payback(p_cur, p_base),
+              "note": "台账口径（止于2022-01，未含后续平仓亏损；且含浮亏-4767，如扣减则缺口更大）"},
+    "COMBINED": {"current": round((p_cur or 0) + (f_cur or 0), 2), "principal": round((p_base or 0) + (f_base or 0), 2),
+                 "gap": round((p_base + f_base) - (p_cur + f_cur), 2),
+                 "scenarios": payback((p_cur or 0) + (f_cur or 0), (p_base or 0) + (f_base or 0)),
+                 "note": "POEMS 台账净值 + FUTU 期末权益（USD 折算）"},
+}
+
 analytics = {
     "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    "revision": 2,
+    "revision": 3,
+    "yearly": {"FUTU": f_cf, "POEMS_detail": p_yearly, "POEMS_ledger": p_ledger_year,
+               "POEMS_ledger_unreal": p_ledger_unreal},
+    "ranking": {"losses": rank_losses, "gains": rank_gains},
+    "payback": analytics_payback,
     "changelog": [
         "v2 修正：'卖空'方向此前被误当'买入'（SBUX 实际亏 9,486 被记为 -705、01519 实际盈 4,500 被记为 -4,540）",
         "v2 修正：USD/HKD 不再混加，全部分币种核算",
         "v2 并入资金明细（2024-08→2026-09，1082 条），FUTU KPI 改账户级净值口径；Excel 旧台账（本金9500/亏4260）标注为 2021-22 旧口径，不再用于 KPI",
         "v2 补充：融券费 1,091、融资利息 298、卖空股息 955 等订单表不含的成本已计入",
+        "v3 新增：总本金vs总盈亏(按年)、回本周期与条件测算、最大亏损/盈利10只个股对比",
     ],
     "caveats": [
         "POEMS 历史成交的股票名称在源文件中为损坏公式(#VALUE!)，无法恢复；历史成交以编号+市场+币种标识。",
@@ -422,6 +558,7 @@ analytics = {
         "资金明细逐条余额链存在 128 处跨币种/多腿记录不闭合（主要为换汇、迁移多腿），但期初+全部金额=期末 恒等式在 USD/HKD 分别成立（见 cash.recon）。",
         "资产净值 HKD→USD 折算用参考汇率 0.12875（2026-09），仅用于展示层合计；所有交易与盈亏统计均为分币种原值。",
         "数据截至 2026-09-22（成交导出）/ 2026-09-23（资金明细导出）；'现价'为最后成交价，非实时行情。",
+        "分年度盈亏中，FUTU 未实现浮亏按'最后事件年'归集（源数据无每日估值）；POEMS 2022-02 后盈亏按平仓日归属、浮亏为当前快照，与 FUTU 口径存在近似差异。",
     ],
     "kpi": kpi,
     "futu_nav": futu_nav,

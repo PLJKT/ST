@@ -200,18 +200,54 @@ function renderPayback() {
 /* ---------- 盈亏榜（新口径：FUTU=已实现+浮动；POEMS=台账分股票汇总，名称完整） ---------- */
 function renderRanking() {
   const L = D.ranking.losses, G = D.ranking.gains;
-  const lab = (x) => `${String(x.label).slice(0, 20)}${x.ccy === "HKD" ? "*" : ""}·${x.account === "FUTU" ? "F" : "P"}`;
+  // 紧凑标签：code + 截断 name（最长 13 字符主体 + HKD*/F·P 后缀）
+  const lab = (x) => {
+    const s = String(x.label);
+    const sp = s.indexOf(" ");
+    let code, name;
+    if (sp > 0) { code = s.slice(0, sp); name = s.slice(sp + 1); }
+    else { code = s; name = ""; }
+    const short = name.length > 10 ? name.slice(0, 9) + "…" : name;
+    const main = short ? `${code} ${short}` : code;
+    return main + (x.ccy === "HKD" ? "*" : "") + "·" + (x.account === "FUTU" ? "F" : "P");
+  };
   const tip = (o) => {
     const d = o.data;
     return `${d.name}<br>已实现 ${d.raw} · 浮动 ${d.u == null ? "—" : (MONEY[d.ccy] || "") + fmt0(d.u)}<br>合计(折USD) ${usd(d.t)} · ${d.src}`;
   };
-  const bar = (arr, color) => ({ type: "bar", data: arr.map((x) => ({ value: x.total_usd, name: x.label, raw: (MONEY[x.ccy] || x.ccy + " ") + fmt0(x.realized), u: x.unrealized, ccy: x.ccy, t: x.total_usd, src: x.src || x.account, itemStyle: { color } })), label: { show: true, position: "left", formatter: (p) => fmt0(p.value), color: "#8593ab", fontSize: 10 } });
-  mk("cTopLoss", { backgroundColor: "transparent", title: { text: "最大亏损 10 只（合计折USD 升序 · F=FUTU P=POEMS · *=HKD 计价）", left: 10, textStyle: { fontSize: 12 } }, tooltip: { formatter: tip }, grid: { top: 40, bottom: 24, left: 150, right: 24 },
+  // 数值标签智能定位：都放在 bar 的右侧外侧 —— 远离左侧类别名，远离 0 轴线
+  //   亏损柱: bar 从 0 向左延伸，右侧外侧 ≈ 0 附近（在 grid.right 空白区内），
+  //          与左侧 y 轴类别名零重叠
+  //   盈利柱: bar 从 0 向右延伸，右侧外侧 = bar 右端附近（在 bar 与右边距之间），
+  //          远离 y 轴类别名
+  const bar = (arr, color) => ({
+    type: "bar",
+    data: arr.map((x) => ({ value: x.total_usd, name: x.label, raw: (MONEY[x.ccy] || x.ccy + " ") + fmt0(x.realized), u: x.unrealized, ccy: x.ccy, t: x.total_usd, src: x.src || x.account, itemStyle: { color } })),
+    label: { show: true, position: "right", distance: 5, formatter: (p) => fmt0(p.value), color: "#dbe4f0", fontSize: 10.5, fontWeight: 600 },
+    barWidth: 14,
+  });
+  const gridCfg = { top: 40, bottom: 24, left: 180, right: 56 };
+  const yAxisCfg = {
+    type: "category", inverse: true,
+    axisLabel: { color: "#cdd5e0", fontSize: 10.5, width: 168, overflow: "truncate", ellipsis: "…", padding: [0, 6, 0, 0] },
+    axisLine: { lineStyle: { color: "#232c3d" } }, axisTick: { show: false },
+  };
+  mk("cTopLoss", {
+    backgroundColor: "transparent",
+    title: { text: "最大亏损 10 只（合计折USD 升序 · F=FUTU P=POEMS · *=HKD 计价）", left: 10, textStyle: { fontSize: 12, color: "#dbe4f0" } },
+    tooltip: { formatter: tip, textStyle: { color: "#0d1117" } }, grid: gridCfg,
     xAxis: { type: "value", ...AX((v) => fmt0(v)), splitLine: { lineStyle: { color: "#1a2233" } } },
-    yAxis: { type: "category", data: L.map(lab), inverse: true, axisLabel: { color: "#8593ab", fontSize: 11 }, axisLine: { lineStyle: { color: "#232c3d" } } }, series: [bar(L, "#ef5b5b")] });
-  mk("cTopGain", { backgroundColor: "transparent", title: { text: "最大盈利 10 只（合计折USD 降序）", left: 10, textStyle: { fontSize: 12 } }, tooltip: { formatter: tip }, grid: { top: 40, bottom: 24, left: 150, right: 24 },
+    yAxis: { ...yAxisCfg, data: L.map(lab) },
+    series: [bar(L, "#ef5b5b")]
+  });
+  mk("cTopGain", {
+    backgroundColor: "transparent",
+    title: { text: "最大盈利 10 只（合计折USD 降序）", left: 10, textStyle: { fontSize: 12, color: "#dbe4f0" } },
+    tooltip: { formatter: tip, textStyle: { color: "#0d1117" } }, grid: gridCfg,
     xAxis: { type: "value", ...AX((v) => fmt0(v)), splitLine: { lineStyle: { color: "#1a2233" } } },
-    yAxis: { type: "category", data: G.map(lab), inverse: true, axisLabel: { color: "#8593ab", fontSize: 11 }, axisLine: { lineStyle: { color: "#232c3d" } } }, series: [bar(G, "#2fbf71")] });
+    yAxis: { ...yAxisCfg, data: G.map(lab) },
+    series: [bar(G, "#2fbf71")]
+  });
 }
 
 /* ---------- 对账 ---------- */

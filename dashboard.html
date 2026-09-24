@@ -20,11 +20,11 @@ nav a:hover{color:var(--txt);background:var(--card)}
 main{padding:20px 28px 60px;max-width:1280px;margin:0 auto}
 section{margin-bottom:34px}
 h2{font-size:15px;margin-bottom:14px;color:var(--txt);border-left:3px solid var(--acc);padding-left:10px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
-.card .k{font-size:12px;color:var(--sub);margin-bottom:6px}
-.card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
-.card .s{font-size:12px;color:var(--sub);margin-top:5px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;min-width:0}
+.card .k{font-size:12px;color:var(--sub);margin-bottom:6px;overflow-wrap:break-word}
+.card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+.card .s{font-size:11.5px;color:var(--sub);margin-top:5px;overflow-wrap:break-word;line-height:1.45}
 .pos{color:var(--ok)}.neg{color:var(--bad)}.neu{color:var(--warn)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media(max-width:900px){.grid2{grid-template-columns:1fr}}
@@ -109,7 +109,7 @@ footer{padding:24px 28px;color:var(--sub);font-size:12px;border-top:1px solid va
   <div class="note" style="margin:6px 0 14px">* FUTU「现价/浮动盈亏」按 CSV 中最后一笔成交价估算，非实时行情；POEMS 为 Excel 台账快照值。合计浮动盈亏：FUTU USD <span id="futuUpnl"></span></div>
   <h2 style="font-size:13px;margin-top:18px">FUTU 持仓（FIFO 剩余批次成本）</h2>
   <div class="tw" id="tFutuOpen"></div>
-  <h2 style="font-size:13px;margin-top:18px">POEMS 持仓（Excel 台账快照）</h2>
+  <h2 style="font-size:13px;margin-top:18px">POEMS 持仓（账户已关闭，2022-01 快照；6 只已迁至 FUTU）</h2>
   <div class="tw" id="tPoemsOpen"></div>
 </section>
 <section id="trades"><h2>交易明细</h2>

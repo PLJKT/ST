@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>ST · 投资交易仪表盘</title>
+<style>
+:root{--bg:#0b0f17;--card:#121826;--card2:#0e1420;--line:#232c3d;--txt:#dbe4f0;--sub:#8593ab;--acc:#5aa7ff;--ok:#2fbf71;--bad:#ef5b5b;--warn:#e8a13c}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+header{position:sticky;top:0;z-index:10;background:rgba(11,15,23,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);padding:14px 28px;display:flex;align-items:center;gap:16px}
+header h1{font-size:17px;font-weight:700;letter-spacing:.5px}
+header .meta{color:var(--sub);font-size:12px;flex:1}
+header button{background:none;border:1px solid var(--line);color:var(--sub);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px}
+header button:hover{color:var(--txt);border-color:var(--acc)}
+nav{display:flex;gap:4px;padding:10px 28px 0;flex-wrap:wrap}
+nav a{color:var(--sub);text-decoration:none;padding:7px 14px;border-radius:8px 8px 0 0;font-size:13px;border:1px solid transparent;border-bottom:none}
+nav a:hover{color:var(--txt);background:var(--card)}
+main{padding:20px 28px 60px;max-width:1280px;margin:0 auto}
+section{margin-bottom:34px}
+h2{font-size:15px;margin-bottom:14px;color:var(--txt);border-left:3px solid var(--acc);padding-left:10px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.card .k{font-size:12px;color:var(--sub);margin-bottom:6px}
+.card .v{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.card .s{font-size:12px;color:var(--sub);margin-top:5px}
+.pos{color:var(--ok)}.neg{color:var(--bad)}.neu{color:var(--warn)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.chart{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}
+.chart .box360{height:360px;width:100%}
+.chart .box300{height:300px;width:100%}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--sub);font-weight:600;position:sticky;top:0;background:var(--card)}
+.tw{max-height:420px;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 10px}
+.note{font-size:12px;color:var(--sub);background:var(--card2);border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:8px;padding:12px 16px;margin-top:12px;line-height:1.8}
+.insight{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 22px;line-height:2;font-size:13.5px}
+.insight b{color:var(--acc)}
+.toolbar{display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
+.toolbar input,.toolbar select{background:var(--card2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 12px;font-size:13px;outline:none}
+.toolbar .grow{flex:1}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;border:1px solid var(--line);color:var(--sub)}
+footer{padding:24px 28px;color:var(--sub);font-size:12px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1>📈 ST · 交易分析仪表盘</h1>
+  <span class="meta" id="metaTop">POEMS（新加坡保证金） + FUTU（港股美股保证金）</span>
+  <button id="btnLogout" title="清除本地会话数据">登 出</button>
+</header>
+<nav id="nav">
+  <a href="#overview">总览</a><a href="#recon">数据对账</a><a href="#equity">净值与收益</a><a href="#yearly">本金vs盈亏</a><a href="#payback">回本测算</a><a href="#ranking">盈亏榜</a><a href="#poems">POEMS 分析</a>
+  <a href="#futu">FUTU 分析</a><a href="#positions">当前持仓</a><a href="#trades">交易明细</a><a href="#notes">口径与说明</a>
+</nav>
+<main>
+<section id="overview"><h2>账户总览</h2><div class="cards" id="kpis"></div></section>
+<section id="diagnosis"><h2>关键诊断（自动生成）</h2><div class="insight" id="insights"></div></section>
+<section id="recon"><h2>数据对账（FUTU 以资金明细为唯一事实源）</h2><div class="tw" id="tRecon"></div></section>
+<section id="equity"><h2>净值曲线与月度盈亏</h2>
+  <div class="grid2">
+    <div class="chart"><div class="box360" id="cEq"></div></div>
+    <div class="chart"><div class="box360" id="cBench"></div></div>
+    <div class="chart"><div class="box360" id="cMonthly"></div></div>
+    <div class="chart"><div class="box360" id="cFutuMonthly"></div></div>
+  </div>
+  <div class="note" id="eqNote"></div>
+</section>
+<section id="yearly"><h2>① 总本金 vs 总盈亏（按年份）</h2>
+  <div class="chart"><div class="box360" id="cYearly"></div></div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="tw" id="tYearlyFutu"></div>
+    <div class="tw" id="tYearlyPoems"></div>
+  </div>
+  <div class="note" id="yearlyNote"></div>
+</section>
+<section id="payback"><h2>② 回本周期与条件</h2>
+  <div class="grid2">
+    <div class="chart"><div class="box360" id="cPayback"></div></div>
+    <div class="tw" id="tPayback"></div>
+  </div>
+  <div class="note" id="paybackNote"></div>
+</section>
+<section id="ranking"><h2>③ 最大亏损 10 只 vs 最大盈利 10 只（跨账户，按 USD 折算排序）</h2>
+  <div class="grid2">
+    <div class="chart"><div class="box360" id="cTopLoss"></div></div>
+    <div class="chart"><div class="box360" id="cTopGain"></div></div>
+  </div>
+</section>
+<section id="poems"><h2>POEMS（ShareInvestment）分析</h2>
+  <div class="grid2">
+    <div class="chart"><div class="box360" id="cPoemsScatter"></div></div>
+    <div class="chart"><div class="box360" id="cHoldDays"></div></div>
+    <div class="chart"><div class="box360" id="cDayGrade"></div></div>
+    <div class="chart"><div class="box360" id="cPoemsMkt"></div></div>
+  </div>
+</section>
+<section id="futu"><h2>FUTU 分析（2024-08 起的 CSV 完整成交）</h2>
+  <div class="grid2">
+    <div class="chart"><div class="box360" id="cFutuSym"></div></div>
+    <div class="chart"><div class="box360" id="cOrders"></div></div>
+  </div>
+  <div class="note">⚠️ FUTU 2024-08 之前的早期交易（Excel 台账记至 2022-01）不在 CSV 导出覆盖范围内，两套数据口径并存，详见底部说明。</div>
+</section>
+<section id="positions"><h2>当前持仓（按数据导出时点）</h2>
+  <div class="note" style="margin:6px 0 14px">* FUTU「现价/浮动盈亏」按 CSV 中最后一笔成交价估算，非实时行情；POEMS 为 Excel 台账快照值。合计浮动盈亏：FUTU USD <span id="futuUpnl"></span></div>
+  <h2 style="font-size:13px;margin-top:18px">FUTU 持仓（FIFO 剩余批次成本）</h2>
+  <div class="tw" id="tFutuOpen"></div>
+  <h2 style="font-size:13px;margin-top:18px">POEMS 持仓（Excel 台账快照）</h2>
+  <div class="tw" id="tPoemsOpen"></div>
+</section>
+<section id="trades"><h2>交易明细</h2>
+  <div class="toolbar">
+    <select id="tradeAcct"><option value="poems">POEMS 已平仓（158）</option><option value="futu">FUTU 卖出批次（234）</option></select>
+    <input id="tradeSearch" class="grow" placeholder="搜索 代码/名称/市场/日期…">
+    <button id="tradeMore" style="display:none" class="badge">加载更多</button>
+  </div>
+  <div class="tw" id="tTrades" style="max-height:560px"></div>
+</section>
+<section id="notes"><h2>数据口径与隐私说明</h2><div class="note" id="caveats"></div></section>
+</main>
+<footer>数据截至 2026-09-22 导出时点 · 全部数据以 AES-256-GCM 加密于 vault.json，仅登录会话内在本机浏览器解密 · 无第三方遥测</footer>
+<script src="echarts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>登录 · ST 投资交易记录</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--txt:#e6edf3;--sub:#8b949e;--acc:#58a6ff;--ok:#3fb950;--bad:#f85149}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(1200px 600px at 70% -10%,#152338 0%,var(--bg) 55%);color:var(--txt);font:15px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.box{width:100%;max-width:400px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:36px 34px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+h1{font-size:21px;margin-bottom:4px}
+.tag{color:var(--sub);font-size:13px;margin-bottom:26px}
+label{display:block;font-size:13px;color:var(--sub);margin:14px 0 6px}
+input{width:100%;padding:11px 13px;background:#0d1117;border:1px solid var(--line);border-radius:8px;color:var(--txt);font-size:15px;outline:none}
+input:focus{border-color:var(--acc)}
+button{width:100%;margin-top:22px;padding:12px;background:var(--acc);color:#04121f;font-weight:700;font-size:15px;border:0;border-radius:8px;cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}
+.msg{min-height:22px;margin-top:14px;font-size:13px;color:var(--bad)}
+.msg.ok{color:var(--ok)}
+.foot{margin-top:24px;font-size:12px;color:var(--sub);border-top:1px solid var(--line);padding-top:14px}
+.lock{font-size:13px;color:var(--sub);margin-bottom:20px;padding:10px 12px;background:#0d1117;border:1px solid var(--line);border-radius:8px}
+</style>
+</head>
+<body>
+<form class="box" id="f" autocomplete="off">
+  <h1>ST · 投资交易记录</h1>
+  <div class="tag">POEMS + FUTU 全账户分析仪表盘</div>
+  <div class="lock">🔒 全部交易数据以 AES-256-GCM 加密存储，密码只在本机浏览器内完成密钥派生与解密，请求中不发送密码，也不存在任何服务端。</div>
+  <label for="u">用户名</label>
+  <input id="u" name="u" autocomplete="username" required>
+  <label for="p">密码</label>
+  <input id="p" name="p" type="password" autocomplete="current-password" required>
+  <button id="btn" type="submit">解 锁 仪 表 盘</button>
+  <div class="msg" id="msg" aria-live="polite"></div>
+  <div class="foot">提示：忘记密码无法找回——密钥由密码本身派生，系统未保存任何凭据。</div>
+</form>
+<script src="crypto.js"></script>
+<script src="sha256.js"></script>
+<script src="vault.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let vaultPromise = null;
+const loadVault = () => vaultPromise || (vaultPromise =
+  fetch("vault.json").then(r => { if (!r.ok) throw new Error("http"); return r.json(); })
+    .catch(() => { if (window.__VAULT__) return window.__VAULT__; throw new Error("vault 加载失败"); }));
+
+async function shaFallback(s) { // 非安全上下文（如 http:// 局域网）下 crypto.subtle 不可用时的纯 JS 回退
+  return sha256Hex ? sha256Hex(s) : null;
+}
+async function usernameOk(vault, user) {
+  if (crypto.subtle) {
+    const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(user));
+    return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("") === vault.username_sha256;
+  }
+  const hex = await shaFallback(user);
+  return hex === vault.username_sha256;
+}
+$("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("btn"), msg = $("msg");
+  btn.disabled = true; msg.textContent = "正在派生密钥（PBKDF2 210,000 次迭代，约 1 秒）…"; msg.className = "msg";
+  try {
+    const vault = await loadVault();
+    const user = $("u").value.trim(), pass = $("p").value;
+    if (!(await usernameOk(vault, user))) throw new Error("用户名或密码错误");
+    const data = await unlockVault(vault, pass);
+    sessionStorage.setItem("st_data", JSON.stringify(data));
+    msg.textContent = "验证通过，进入仪表盘…"; msg.className = "msg ok";
+    setTimeout(() => { location.href = "dashboard.html"; }, 300);
+  } catch (err) {
+    msg.textContent = (String(err && err.message) === "WRONG_PASSWORD") ? "用户名或密码错误" : (err && err.message || "解锁失败");
+    btn.disabled = false;
+    try { sessionStorage.removeItem("st_data"); } catch (_) {}
+  }
+});
+</script>
+</body>
+</html>

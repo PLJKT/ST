@@ -61,15 +61,17 @@ function card(k, v, s, cls) { return `<div class="card"><div class="k">${k}</div
 function renderKpis() {
   const P = D.kpi.POEMS, N = D.futu_nav, F = D.futu;
   const costUSD = F.cash.interest_by_ccy.USD + F.cash.fees_by_ccy.USD + F.cash.dividend_by_ccy.USD;
+  // POEMS 账户已关闭（截至 2022-01-27 后迁至 FUTU），净值与保证金风险视为 $0
+  const poemsClosed = P.equity === 0 || P.equity == null;
   $("kpis").innerHTML = [
-    card("FUTU 期末权益（USD 折算）", "$" + fmt0(N.equity_usd), "现金 " + m("USD", N.end_cash.USD) + " · 空头市值 " + m("HKD", N.positions_mv.short_hkd)),
-    card("FUTU 账户净盈亏（双口径互证）", m("USD", N.pnl_mot_usd), "交易层互证 " + m("USD", N.pnl_tradeview_usd) + " · 差 $" + fmt(Math.abs(N.views_gap_usd)), "neg"),
-    card("FUTU 已实现", m("USD", F.realized_by_ccy.USD), "HKD " + fmt0(F.realized_by_ccy.HKD) + " ·（分币种不相加）", "neg"),
+    card("FUTU 期末权益（USD 折算）", "$" + fmt(N.equity_usd), `现金 ${m("USD", N.end_cash.USD)} · 空头市值 ${m("HKD", N.positions_mv.short_hkd)}`),
+    card("FUTU 账户净盈亏", m("USD", N.pnl_mot_usd), `双口径互证差 $${fmt(Math.abs(N.views_gap_usd))}`, "neg"),
+    card("FUTU 已实现", m("USD", F.realized_by_ccy.USD), `HKD ${fmt(F.realized_by_ccy.HKD)}（分币种）`, "neg"),
     card("FUTU 浮动盈亏", m("USD", F.float_by_ccy.USD), "按最后成交价估算", "neg"),
-    card("FUTU 隐性成本", m("USD", costUSD), "融券费/利息/卖空股息——订单表不含", "neg"),
-    card("POEMS 台账净值", "$" + fmt0(P.equity), "净赚 " + usd(P.net_gain) + "（" + pct(P.return) + "）", "pos"),
-    card("POEMS 保证金风险", m("USD", P.cash_balance), "Margin Call " + m("USD", D.poems.margin["Margin Call"]), "neg"),
-    card("FUTU 成交/委托", F.n_fills + " / " + F.orders.n, "撤单率 " + pct(F.orders.cancel_rate) + " · 含卖空 " + F.directions["卖空"] + " 笔"),
+    card("FUTU 隐性成本", m("USD", costUSD), "融券费+利息+卖空股息（订单表不含）", "neg"),
+    card("POEMS 台账净值", poemsClosed ? "$0" : "$" + fmt(P.equity), poemsClosed ? "账户已关闭 · 历史净赚 " + usd(P.net_gain) : "净赚 " + usd(P.net_gain) + "（" + pct(P.return) + "）", poemsClosed ? "neu" : "pos"),
+    card("POEMS 保证金风险", poemsClosed ? "$0" : m("USD", P.cash_balance), poemsClosed ? "账户已关闭（2022-01）" : "Margin Call " + m("USD", D.poems.margin["Margin Call"]), poemsClosed ? "neu" : "neg"),
+    card("FUTU 成交/委托", F.n_fills + " / " + F.orders.n, `撤单率 ${pct(F.orders.cancel_rate)} · 含卖空 ${F.directions["卖空"]} 笔`),
   ].join("");
 }
 
@@ -82,7 +84,7 @@ function renderInsights() {
     `<b>盈利主力：</b>NVDA ${usd(nv.realized)}（46 次平仓 35 胜）、01519 空头 ${m("HKD", jr.realized)}、SOXL ${usd(f.per_symbol["SOXL"].realized)}、AMD ${usd(f.per_symbol["AMD"].realized)}。`,
     `<b>成本结构：</b>手续费+利息+融券费+卖空股息共 ${m("USD", N.components_usd.fees_interest + N.components_usd.dividends_net)}——其中<b>融券费 $1,091、卖空股息 $955 是订单表口径完全漏掉的</b>，实际成本比"佣金 $1,082"高出一倍。`,
     `<b>融资依赖：</b>期末现金 -$${fmt0(-N.end_cash.USD)} 全靠 2026 年 $${fmt0(N.capital.bank_net_usd)} 银行入金维持，保证金账户长期负现金运转。`,
-    `<b>POEMS：</b>美股 ${u.n} 笔、胜率 ${pct(u.win_rate)}、净赚 $${fmt0(u.sum)}，但赔率 ${u.payoff}（均亏 $${fmt(-u.avg_loss)} > 均盈 $${fmt(u.avg_win)}）与 FUTU 同样的"小赚大亏"结构；台账现金 -$${fmt0(-p.margin["Cash Balance"])} 持续 margin call。`,
+    `<b>POEMS（已关闭，2022-01 后迁至 FUTU）：</b>美股 ${u.n} 笔、胜率 ${pct(u.win_rate)}、历史净赚 $${fmt(u.sum)}，赔率 ${u.payoff}（均亏 $${fmt(-u.avg_loss)} > 均盈 $${fmt(u.avg_win)}）"小赚大亏"结构。当前账户余额视为 $0，台账止于 2022-01-27。`,
     `<b>行为信号：</b>${pct(f.orders.cancel_rate)} 撤单率 + ${f.directions["卖空"]} 笔卖空频繁进出，交易频率（2025 年 ${f.fills_by_year["2025"] || 0} 笔）与净亏负相关——降低频率是第一修正建议。`,
   ].map((s) => `<li>${s}</li>`).join("") + "</ul>";
 }
@@ -93,11 +95,11 @@ const AX = (f2) => ({ axisLabel: { color: "#8593ab", formatter: f2 }, axisLine: 
 
 function renderCharts() {
   const eq = D.equity, mo = D.monthly, f = D.futu, p = D.poems;
-  mk("cEq", { backgroundColor: "transparent", title: { text: "POEMS 净值曲线（台账 2020-03→2022-01，美元）", left: 10, textStyle: { fontSize: 13 } }, tooltip: { trigger: "axis" }, grid: { top: 40, bottom: 30, left: 62, right: 18 },
+  mk("cEq", { backgroundColor: "transparent", title: { text: "POEMS 净值曲线（已关闭，2020-03→2022-01，美元）", left: 10, textStyle: { fontSize: 13 } }, tooltip: { trigger: "axis" }, grid: { top: 40, bottom: 30, left: 62, right: 18 },
     xAxis: { type: "category", data: eq.months, ...AX() }, yAxis: { type: "value", scale: true, ...AX((v) => "$" + fmt0(v)), splitLine: { lineStyle: { color: "#1a2233" } } },
     series: [{ name: "POEMS", type: "line", data: eq.POEMS, smooth: true, areaStyle: { opacity: .07 }, lineStyle: { width: 2.5, color: "#5aa7ff" }, itemStyle: { color: "#5aa7ff" } },
              { name: "本金", type: "line", symbol: "none", data: eq.months.map(() => D.kpi.POEMS.initial_deposit), lineStyle: { width: 1, color: "#666" } }] });
-  mk("cBench", { backgroundColor: "transparent", title: { text: "POEMS 净值 vs 指数（起点=100，2020-03→2022-01）", left: 10, textStyle: { fontSize: 13 } }, tooltip: { trigger: "axis" }, legend: { bottom: 0, textStyle: { color: "#8593ab" } }, grid: { top: 40, bottom: 56, left: 48, right: 18 },
+  mk("cBench", { backgroundColor: "transparent", title: { text: "POEMS 净值 vs 指数（已关闭，起点=100，2020-03→2022-01）", left: 10, textStyle: { fontSize: 13 } }, tooltip: { trigger: "axis" }, legend: { bottom: 0, textStyle: { color: "#8593ab" } }, grid: { top: 40, bottom: 56, left: 48, right: 18 },
     xAxis: { type: "category", data: mo.months, ...AX() }, yAxis: { type: "value", scale: true, ...AX(), splitLine: { lineStyle: { color: "#1a2233" } } },
     series: [{ name: "POEMS净值", type: "line", symbol: "none", lineStyle: { width: 3, color: "#e8a13c" }, data: eq.POEMS.map((v) => +(v / eq.POEMS[0] * 100).toFixed(1)) },
       ...["SPX", "NASDAQ", "HSI"].map((nm) => { const arr = mo.benchmark[nm]; return { name: { SPX: "标普500", NASDAQ: "纳斯达克", HSI: "恒指" }[nm], type: "line", symbol: "none", data: arr.map((v) => v == null ? null : +(v / arr[0] * 100).toFixed(1)) }; })] });
@@ -271,6 +273,6 @@ function renderCaveats() {
   $("caveats").innerHTML = "<b>数据修订记录</b><br>" + D.changelog.map((c, i) => `${i + 1}. ${c}`).join("<br>") +
     "<br><br><b>已知口径限制</b><br>" + D.caveats.map((c, i) => `${i + 1}. ${c}`).join("<br>") +
     "<br><br><b>安全说明</b><br>· 数据加密于 vault.json（AES-256-GCM，PBKDF2-SHA256 210,000 次迭代派生密钥），登录解密仅在本机浏览器完成，无服务端、无第三方请求。<br>· 明文只存在于当前标签页 sessionStorage，登出/关闭即销毁。";
-  $("eqNote").innerHTML = "FUTU 净值双口径：① 资金流法（迁入+入金 vs 期末权益）= " + m("USD", D.futu_nav.pnl_mot_usd) + "；② 交易层法（已实现+浮动+费+息）= " + m("USD", D.futu_nav.pnl_tradeview_usd) + "；两法差 $" + fmt(Math.abs(D.futu_nav.views_gap_usd)) + "，互证成立。HKD→USD 折算率 " + D.futu_nav.fx_rate + " 仅用于展示合计。POEMS 净值曲线为台账月度已实现累加（不含浮动盈亏与利息）。";
+  $("eqNote").innerHTML = "FUTU 净值双口径：① 资金流法（迁入+入金 vs 期末权益）= " + m("USD", D.futu_nav.pnl_mot_usd) + "；② 交易层法（已实现+浮动+费+息）= " + m("USD", D.futu_nav.pnl_tradeview_usd) + "；两法差 $" + fmt(Math.abs(D.futu_nav.views_gap_usd)) + "，互证成立。HKD→USD 折算率 " + D.futu_nav.fx_rate + " 仅用于展示合计。POEMS 账户已于 2022-01 关闭并迁至 FUTU（2024-08-03），净值曲线为历史月度已实现累加（2020-03→2022-01），当前不再维护。";
 }
 })();

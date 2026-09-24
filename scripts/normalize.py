@@ -338,7 +338,12 @@ def kpi_row(i):
 # KPI：用户指令——Excel『Overall Summary』中 FUTU/合并台账（rows 5/6，2021-22 旧账户口径）整体废弃，
 # FUTU 全量数据以 资金明细 CSV 为准（账户 2024-08-03 迁移设立起完整）；Excel 仅用于 POEMS。
 kpi = {"POEMS": dict(kpi_row(4), label="POEMS（Excel 台账）",
-                     asof="台账维护止于 2022-01，此后 POEMS 交易未更新")}
+                     asof="账户已关闭（截至 2022-01-27），当前余额视为 $0")}
+# POEMS 账户已于 2022-01 后关闭并迁移至 FUTU（2024-08），台账不再更新。
+# 当前权益、保证金风险、未实现盈亏全部视为 $0（账户不复存在）；保留历史已实现/费用/净赚作为复盘记录。
+kpi["POEMS"]["equity"] = 0
+kpi["POEMS"]["cash_balance"] = 0
+kpi["POEMS"]["unrealized"] = 0
 
 months = []
 for v in osr[10]:
@@ -407,6 +412,9 @@ for r in rows_of["Fee and Margin"]:
     k, val = clean(r[2]), clean(r[3])
     if k in ("Forex SGD to USD", "Cash Balance", "Equity Balance", "Margin Call", "Force Selling"):
         margin[k] = val
+# POEMS 账户已关闭，所有保证金/余额口径归零
+for k in list(margin.keys()):
+    if k != "Forex SGD to USD": margin[k] = 0
 dt_rows = []
 for r in rows_of["Day Trade"][3:]:
     g = lambda i: clean(r[i]) if len(r) > i else None

@@ -7,9 +7,24 @@ try { D = JSON.parse(sessionStorage.getItem("st_data")); } catch (e) { D = null;
 if (!D || D.revision !== 4) { sessionStorage.removeItem("st_data"); location.replace("login.html"); return; }
 
 const $ = (id) => document.getElementById(id);
-const fmt = (v, d = 2) => v == null ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-const fmt0 = (v) => v == null ? "—" : Math.round(Number(v)).toLocaleString("en-US");
-const pct = (v, d = 1) => v == null ? "—" : (v * 100).toFixed(d) + "%";
+const fmt = (v, d) => {
+  if (v == null) return "—";
+  const n = Number(v);
+  if (isNaN(n)) return "—";
+  if (d != null) return n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  // 智能格式：真整数→千分位无小数；非整数→四舍五入1位小数
+  if (Math.abs(n - Math.round(n)) < 0.001) return Math.round(n).toLocaleString("en-US");
+  return (Math.round(n * 10) / 10).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+};
+const fmt0 = (v) => fmt(v);
+const pct = (v, d) => {
+  if (v == null) return "—";
+  const p = v * 100;
+  if (d != null) return p.toFixed(d) + "%";
+  // 智能格式：真整数→无小数；非整数→四舍五入1位
+  if (Math.abs(p - Math.round(p)) < 0.001) return Math.round(p) + "%";
+  return p.toFixed(1) + "%";
+};
 const signCls = (v) => v == null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "";
 const usd = (v) => v == null ? "—" : (v > 0 ? "+$" : "$") + fmt(v);
 const MONEY = { USD: "$", HKD: "HK$" };
@@ -54,7 +69,7 @@ function renderKpis() {
     card("FUTU 隐性成本", m("USD", costUSD), "融券费/利息/卖空股息——订单表不含", "neg"),
     card("POEMS 台账净值", "$" + fmt0(P.equity), "净赚 " + usd(P.net_gain) + "（" + pct(P.return) + "）", "pos"),
     card("POEMS 保证金风险", m("USD", P.cash_balance), "Margin Call " + m("USD", D.poems.margin["Margin Call"]), "neg"),
-    card("FUTU 成交/委托", F.n_fills + " / " + F.orders.n, "撤单率 " + pct(F.orders.cancel_rate, 0) + " · 含卖空 " + F.directions["卖空"] + " 笔"),
+    card("FUTU 成交/委托", F.n_fills + " / " + F.orders.n, "撤单率 " + pct(F.orders.cancel_rate) + " · 含卖空 " + F.directions["卖空"] + " 笔"),
   ].join("");
 }
 
@@ -63,12 +78,12 @@ function renderInsights() {
   const u = p.closed_stats_by_ccy["USD"], sq = f.per_symbol["SQQQ"], nv = f.per_symbol["NVDA"], sb = f.per_symbol["SBUX"], jr = f.per_symbol["01519"];
   $("insights").innerHTML = "<ul style='padding-left:20px'>" + [
     `<b>FUTU 账户整体亏损 $${fmt0(-N.pnl_mot_usd)}</b>（占迁入+入金基数 $${fmt0(N.capital.migration_usd_equiv + N.capital.bank_net_usd)} 的 ${pct(N.pnl_mot_usd / (N.capital.migration_usd_equiv + N.capital.bank_net_usd))}），资金流与交易层两口径互证差 $${fmt(Math.abs(N.views_gap_usd))}，结论可信。`,
-    `<b>最大出血点：SQQQ ${usd(sq.realized)}</b>（115 笔，做多三倍做空 ETF，双向损耗）；<b>SBUX 空头亏 ${usd(sb.realized)}</b>（56 笔胜率仅 ${pct(sb.wins / sb.events, 0)}，做空强势消费股被轧空）。两笔合计 ${usd(sq.realized + sb.realized)}，超过账户总亏。`,
+    `<b>最大出血点：SQQQ ${usd(sq.realized)}</b>（115 笔，做多三倍做空 ETF，双向损耗）；<b>SBUX 空头亏 ${usd(sb.realized)}</b>（56 笔胜率仅 ${pct(sb.wins / sb.events)}，做空强势消费股被轧空）。两笔合计 ${usd(sq.realized + sb.realized)}，超过账户总亏。`,
     `<b>盈利主力：</b>NVDA ${usd(nv.realized)}（46 次平仓 35 胜）、01519 空头 ${m("HKD", jr.realized)}、SOXL ${usd(f.per_symbol["SOXL"].realized)}、AMD ${usd(f.per_symbol["AMD"].realized)}。`,
     `<b>成本结构：</b>手续费+利息+融券费+卖空股息共 ${m("USD", N.components_usd.fees_interest + N.components_usd.dividends_net)}——其中<b>融券费 $1,091、卖空股息 $955 是订单表口径完全漏掉的</b>，实际成本比"佣金 $1,082"高出一倍。`,
     `<b>融资依赖：</b>期末现金 -$${fmt0(-N.end_cash.USD)} 全靠 2026 年 $${fmt0(N.capital.bank_net_usd)} 银行入金维持，保证金账户长期负现金运转。`,
-    `<b>POEMS：</b>美股 ${u.n} 笔、胜率 ${pct(u.win_rate, 0)}、净赚 $${fmt0(u.sum)}，但赔率 ${u.payoff}（均亏 $${fmt(-u.avg_loss)} > 均盈 $${fmt(u.avg_win)}）与 FUTU 同样的"小赚大亏"结构；台账现金 -$${fmt0(-p.margin["Cash Balance"])} 持续 margin call。`,
-    `<b>行为信号：</b>${pct(f.orders.cancel_rate, 0)} 撤单率 + ${f.directions["卖空"]} 笔卖空频繁进出，交易频率（2025 年 ${f.fills_by_year["2025"] || 0} 笔）与净亏负相关——降低频率是第一修正建议。`,
+    `<b>POEMS：</b>美股 ${u.n} 笔、胜率 ${pct(u.win_rate)}、净赚 $${fmt0(u.sum)}，但赔率 ${u.payoff}（均亏 $${fmt(-u.avg_loss)} > 均盈 $${fmt(u.avg_win)}）与 FUTU 同样的"小赚大亏"结构；台账现金 -$${fmt0(-p.margin["Cash Balance"])} 持续 margin call。`,
+    `<b>行为信号：</b>${pct(f.orders.cancel_rate)} 撤单率 + ${f.directions["卖空"]} 笔卖空频繁进出，交易频率（2025 年 ${f.fills_by_year["2025"] || 0} 笔）与净亏负相关——降低频率是第一修正建议。`,
   ].map((s) => `<li>${s}</li>`).join("") + "</ul>";
 }
 
@@ -222,10 +237,10 @@ function tableHTML(cols, rows) { return `<table><thead><tr>${cols.map((c) => `<t
 
 function renderTables() {
   const f = D.futu;
-  const rows = [...Object.entries(f.long_book).map(([c, d]) => ["多头 " + c, d.name, d.market, f.per_symbol[c].ccy, fmt0(d.qty), fmt(d.avg_cost, 3), fmt(d.last_price, 3), `<span class="${signCls(d.u_pnl)}">${m(f.per_symbol[c].ccy, d.u_pnl)}</span>`]),
-                ...Object.entries(f.short_book).map(([c, d]) => ["空头 " + c, d.name, d.market, f.per_symbol[c].ccy, "−" + fmt0(d.qty), fmt(d.avg_price, 3), fmt(d.last_price, 3), `<span class="${signCls(d.u_pnl)}">${m(f.per_symbol[c].ccy, d.u_pnl)}</span>`])];
+  const rows = [...Object.entries(f.long_book).map(([c, d]) => ["多头 " + c, d.name, d.market, f.per_symbol[c].ccy, fmt0(d.qty), fmt(d.avg_cost), fmt(d.last_price), `<span class="${signCls(d.u_pnl)}">${m(f.per_symbol[c].ccy, d.u_pnl)}</span>`]),
+                ...Object.entries(f.short_book).map(([c, d]) => ["空头 " + c, d.name, d.market, f.per_symbol[c].ccy, "−" + fmt0(d.qty), fmt(d.avg_price), fmt(d.last_price), `<span class="${signCls(d.u_pnl)}">${m(f.per_symbol[c].ccy, d.u_pnl)}</span>`])];
   $("tFutuOpen").innerHTML = tableHTML(["方向 代码", "名称", "市场", "币种", "数量", "开仓价", "现价*", "浮动盈亏*"], rows);
-  const poRows = D.poems.open_positions.map((t) => [`#${t.no} ${t.grade || ""}`, t.market || "", t.ccy || "", fmt0(t.qty), fmt(t.buy_price, 2), fmt(t.current_price, 2), `<span class="${signCls(t.pl_pct)}">${pct(t.pl_pct)}</span>`, t.open_date || "—", t.holding_days != null ? fmt0(t.holding_days) : "—"]);
+  const poRows = D.poems.open_positions.map((t) => [`#${t.no} ${t.grade || ""}`, t.market || "", t.ccy || "", fmt0(t.qty), fmt(t.buy_price), fmt(t.current_price), `<span class="${signCls(t.pl_pct)}">${pct(t.pl_pct)}</span>`, t.open_date || "—", t.holding_days != null ? fmt0(t.holding_days) : "—"]);
   $("tPoemsOpen").innerHTML = tableHTML(["编号", "市场", "币种", "数量", "买入价", "现价", "盈亏%", "建仓", "持有天"], poRows);
   renderTradeTable();
 }
@@ -236,11 +251,11 @@ function renderTradeTable() {
   if (acct === "poems") {
     cols = ["#", "市场", "币种", "数量", "买价", "均价", "卖价", "投入", "盈亏", "收益%", "开仓", "平仓", "持有天"];
     rows = D.poems.closed_trades.filter((t) => !q || ("#" + t.no + " " + (t.market || "") + " " + (t.ccy || "") + " " + (t.open_date || "") + " " + (t.close_date || "")).toLowerCase().includes(q))
-      .map((t) => [`#${t.no}`, t.market || "", t.ccy || "", fmt0(t.qty), fmt(t.buy_price, 3), fmt(t.avg_price, 3), fmt(t.exit_price, 3), fmt(t.investment, 0), t.gain_loss != null ? `<span class="${signCls(t.gain_loss)}">${usd(t.gain_loss)}</span>` : "—", t.pl_pct != null ? pct(t.pl_pct) : "—", t.open_date || "—", t.close_date || "—", t.holding_days != null ? fmt0(t.holding_days) : "—"]);
+      .map((t) => [`#${t.no}`, t.market || "", t.ccy || "", fmt0(t.qty), fmt(t.buy_price), fmt(t.avg_price), fmt(t.exit_price), fmt(t.investment), t.gain_loss != null ? `<span class="${signCls(t.gain_loss)}">${usd(t.gain_loss)}</span>` : "—", t.pl_pct != null ? pct(t.pl_pct) : "—", t.open_date || "—", t.close_date || "—", t.holding_days != null ? fmt0(t.holding_days) : "—"]);
   } else {
     cols = ["日期", "代码", "名称", "类型", "数量", "价格", "币种", "已实现"];
     rows = (D.futu.events || []).slice().reverse().filter((t) => !q || (t.code + " " + t.name + " " + t.date + " " + t.type).toLowerCase().includes(q))
-      .map((t) => [t.date, t.code, t.name, t.type, fmt0(t.qty), fmt(t.price, 3), t.ccy, `<span class="${signCls(t.pnl)}">${m(t.ccy, t.pnl)}</span>`]);
+      .map((t) => [t.date, t.code, t.name, t.type, fmt0(t.qty), fmt(t.price), t.ccy, `<span class="${signCls(t.pnl)}">${m(t.ccy, t.pnl)}</span>`]);
   }
   $("tTrades").innerHTML = tableHTML(cols, rows.slice(0, shown));
   const more = $("tradeMore");

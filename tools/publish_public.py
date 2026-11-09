@@ -154,8 +154,9 @@ def main() -> int:
         print(f"中止：镜像里有 {len(problems)} 处身份信息，未推送。")
         return 1
 
-    files = sum(1 for p in dest.rglob("*") if p.is_file())
-    size = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
+    counted = [p for p in dest.rglob("*") if p.is_file() and ".git" not in p.parts]
+    files = len(counted)
+    size = sum(p.stat().st_size for p in counted)
     print(f"镜像已生成：{dest}  （{files} files / {size/1024:.0f} KB）")
 
     if not args.push:

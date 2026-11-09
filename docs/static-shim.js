@@ -146,6 +146,14 @@
       el.innerHTML = "<b style='color:#c7d2fe'>静态快照</b> · 数据截至 " + (t || "未知") +
         "<br><span style='color:#8b98ab'>只读：编辑与实时行情请在本地服务启动后使用</span>";
     });
+    // 不长期遮挡面板底部文字：9 秒后淡出，点击可立即收起
+    var hide = function () {
+      el.style.transition = "opacity .6s ease";
+      el.style.opacity = "0";
+      el.style.pointerEvents = "none";
+    };
+    el.addEventListener("click", hide);
+    setTimeout(hide, 9000);
   }
 
   if (document.readyState === "loading") {

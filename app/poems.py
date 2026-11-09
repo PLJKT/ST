@@ -118,6 +118,12 @@ def import_all() -> dict:
             "UPDATE positions SET quality='reject', quality_note=? WHERE account_id=? AND "
             "COALESCE(source,'')<>'poems_id_docs'", ["旧台账无证券代码，2026 年单据未复现，已由单据重建替代", ACCOUNT])
 
+        # 账户备注：别再沿用「仅 2020 年台账」的旧描述
+        conn.execute(
+            "UPDATE accounts SET note=? WHERE id=?",
+            ["只做印尼股；2026-03 → 2026-11 由 62 份单据重建（对账单 / 成交确认 / 基金对账单），"
+             "2020 年旧台账无证券代码、未复现，已标 reject 留档。", ACCOUNT])
+
         cash = led.get("cash") or {}
         if cash.get("amount") is not None:
             conn.execute(

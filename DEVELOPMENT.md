@@ -45,8 +45,8 @@ ST/
 │  ├─ insights.py       时间线 / 偏好画像 / 风险清单 / 下一步动作
 │  ├─ metrics.py        交易关键指标（总期 + 分账户）
 │  ├─ statement.py      富途资金明细 CSV 导入与现金对账
-│  ├─ poems.py          POEMS 印尼（ID 账户）单据台账
-│  ├─ poems_sg.py        POEMS 新加坡（SG 账户）月结单台账
+│  ├─ poems.py          POEMS 印尼单据台账
+│  ├─ poems_sg.py        POEMS 新加坡月结单台账
 │  ├─ edit.py           持仓增改删 + 现金写入
 │  ├─ discipline.py     交易纪律规则（2% 法则 / 集中度 / 空头 / 杠杆 ETF…）
 │  ├─ risk.py           分市场盘面 / 逐仓止盈止损与概率 / 对冲 / 回本
@@ -55,15 +55,28 @@ ST/
 │  └─ main.py           全部 FastAPI 路由 + 静态站点挂载
 ├─ web/                 index.html / style.css / app.js / echarts.min.js
 ├─ tools/
-│  ├─ export_static.py  生成 docs/ 静态快照（199 个接口）
+│  ├─ export_static.py  生成 docs/ 静态快照（199 个接口，写盘统一走脱敏出口）
 │  ├─ static_shim.js    静态站的 fetch 适配层（会被复制进 docs/）
 │  ├─ update_close.py   拉持仓标的日线收盘写 daily_closes（可挂计划任务）
 │  ├─ export_data_pack.py  st.db 每张表 → data/snapshot/*.csv + MANIFEST.json
 │  ├─ manifest_data.py  data/ 全量 sha256 清单 → data/manifest.json
-│  └─ verify_data.py    一条命令复核 data/ 是否与清单一致（PASS/FAIL）
-├─ data/                原始单据 + 台账 + st.db + 快照（全部入库）
-└─ docs/                静态快照产物（gitignore，只进 gh-pages 分支）
+│  ├─ verify_data.py    一条命令复核 data/ 是否与清单一致（PASS/FAIL）
+│  ├─ redact.py         脱敏核心：键级遮蔽 + 文本/文件名正则 + 发布前硬校验
+│  ├─ redact_secrets.py **真实姓名/银行/券商账号字面量，只在私有库，永不发布**
+│  ├─ redact_audit.py   发布门禁：扫 docs/，命中身份信息即退出码 1
+│  └─ publish_public.py 生成公开镜像（代码 + 脱敏站点）并推送
+├─ data/                原始单据 + 台账 + st.db + 快照（**只在私有库 ST-archive**）
+└─ docs/                脱敏后的静态快照（随公开库 ST 发布，GitHub Pages 源 = main:/docs）
 ```
+
+**两个仓库的分工（2026-11 起）**
+
+| 仓库 | 可见性 | 放什么 | 用途 |
+|---|---|---|---|
+| `PLJKT/ST-archive` | 私有 | 全部原始数据：65 份单据 PDF、转文本、`st.db`、`snapshot/*.csv`、`manifest.json`、`tools/redact_secrets.py` | 事实来源。改系统只依赖它，不必回券商门户/邮箱取证 |
+| `PLJKT/ST` | 公开 | `app/` `web/` `tools/` `server.py` `docs/`（脱敏站点）、`data/universe.csv` | 代码展示 + 站点 `https://pljkt.github.io/ST/` |
+
+公开库由 `tools/publish_public.py` 生成，**不是**手抄：它复制代码、清洗文档、剔除 `redact_secrets.py`、带上已脱敏的 `docs/`，最后对整份镜像再跑一次 `assert_clean`，命中即中止推送。
 
 ---
 
@@ -106,7 +119,7 @@ SQLite，`data/st.db`，WAL 模式。**改表结构只改 `db.py` 里的 `SCHEMA
 
 三条来源，三种处理方式，互不合并账户。
 
-### 4.1 辉立印尼 ID 账户（62 份 PDF）
+### 4.1 辉立印尼（62 份 PDF）
 
 ```
 data/source/poems_id/*.pdf
@@ -117,7 +130,7 @@ data/source/poems_id/*.pdf
               └ POST /api/poems/import → poems_trades / poems_cashflows / poems_mf / positions / closed_trades
 ```
 
-### 4.2 辉立新加坡 SG 账户（2 期月结单 + 1 份股息税单）
+### 4.2 辉立新加坡（2 期月结单 + 1 份股息税单）
 
 ```
 data/source/poems_sg/*.pdf → data/raw/poems_sg_txt/*.txt
@@ -128,7 +141,7 @@ data/source/poems_sg/*.pdf → data/raw/poems_sg_txt/*.txt
 
 SG 只有 2 期快照、中间成交流水缺失，所以**不生成 `closed_trades`**，`realized` 继续用 2020–2022 台账的 6,662.84，并在 `metrics.py` 里带 `return_basis` 标签说明口径。
 
-### 4.3 富途（账户，美股+港股）
+### 4.3 富途（美股+港股）
 
 ```
 资金明细 CSV → POST /api/statement/import → cash_flows（幂等，id = sha1(path) 前 16 位）+ 用末笔余额改写现金
@@ -201,19 +214,39 @@ uv run --with fastapi --with uvicorn --with yfinance python tools\export_static.
 
 快照机制：`docs/data/index.json` 把「规范化后的接口 key」映射到内容哈希文件 `data/<sha1>.json`；`static-shim.js` 拦截 `fetch('/api/...')` 查表并带上 `?v=<时间戳>` 取回，从而绕过 CDN 缓存。`export_static.py` 会同步清掉不再被映射的旧哈希文件（`docs/data` 文件数应等于接口数 + 1）。
 
-发布到 GitHub Pages：
+发布到 GitHub Pages（公开库 `PLJKT/ST`，Pages 源 = `main` `/docs`）：
 
 ```powershell
-# main 先提交
-& "<local> Files\Git\cmd\git.exe" -c user.name=PLJKT -c user.email=***@*** commit -am "..."
-& "<local> Files\Git\cmd\git.exe" push origin main
+# 0) 服务在听（8300），先把 docs/ 重导一次
+uv run --with fastapi --with uvicorn --with yfinance python tools\export_static.py --universe-limit 65
 
-# gh-pages：全新 clone → 清空 → 复制 docs → .nojekyll → push
+# 1) 门禁：必须 PASS 才能往下走（命中姓名/银行/券商账号/本地路径即退出码 1）
+python tools\redact_audit.py
+
+# 2) 生成公开镜像 + 推送（内部已再做一次整镜像校验）
+python tools\publish_public.py --push
 ```
+
+`publish_public.py` 会：复制 `app/ web/ tools/ docs/` 与根文件 → 清洗 README/DEVELOPMENT（账号写法转「SG 账户 / ID 账户 / 富途账户」、Windows 路径转 `<local>`）→ 剔除 `tools/redact_secrets.py` → `data/` 只留 `universe.csv` + 说明 → 写公开版 `.gitignore` → 整份镜像 `assert_clean` → `git init/add/commit/push` 到 `PLJKT/ST`。
 
 凭据走 `GIT_ASKPASS`（`@echo off` + `gh auth token`），并加 `-c credential.helper= -c credential.username=x-access-token`，否则 HTTPS 推送会静默挂起。
 
 线上验收套路：打开 `https://pljkt.github.io/ST/?v=<新值>#analysis`（hash 只切 tab，不刷新数据；用 `?v=` 强制换 URL 才能拿到新快照），点 tab 后等 3–9 秒再读 DOM。
+
+### 8.1 脱敏规则与发布门禁
+
+| 层 | 处理 |
+|---|---|
+| 键级（`KEY_BLOCK`） | `holder` `held_by` `acct_no` `account_no` `poems_id` `sid` `rdn` `ifua` `tax_id` `npwp` `email` `phone` `address`… → 一律 `***` |
+| 键级（`KEY_PATH`） | `db` 固定写 `data/st.db`；`path/file/filename/files/source_file/source_files/dir` → 只留 basename 再 scrub |
+| 文本级 | 姓名/银行/券商账号/IFUA/SID/用户名 → 按字面量替换；`<local> → `<local>`；`BCA 数字` → `BCA ***`；邮箱 → `***@***`；印尼手机号 → `***` |
+| 文件名级 | 成交确认文件名里的账号段 → `***`（账户尾号只按独立数字替换，避免误伤金额） |
+| 不脱敏 | **金额、股数、收益率、持仓权重**（用户明确选择公开真实仓位） |
+
+- 真实字面量只写 `tools/redact_secrets.py`（私有库），`redact.py` 用 try-import：公开镜像里没有该文件，脱敏器仍可运行但列表为空 —— 这是刻意的，脱敏只在私有库执行。
+- `redact_audit.py` 是硬门禁：`docs/` 里出现姓名/银行账号/券商账号/用户名/`[A-Za-z]:\Users`/邮箱即 FAIL；GitHub 自己的 `@users.noreply.github.com` 白名单放行。
+- 改完脱敏规则要**重导 + 重审**，不要只改代码不重导：`export_static.py` 是所有 JSON 的唯一出口。
+- 别在 `web/index.html`、`app/*.py` 注释里写真实账号（曾经写过，被门禁抓了两次）；界面标签用「POEMS SG · USD 结算」这类描述。
 
 ---
 
@@ -273,12 +306,18 @@ python tools\verify_data.py        # 必须 PASS，否则仓库里的数据与�
 ## 12. 从零 clone 起跑
 
 ```powershell
-git clone https://github.com/PLJKT/ST.git
+# 要跑系统（含真实数据）：clone 私有库
+git clone https://github.com/PLJKT/ST-archive.git ST
 cd ST
 uv run --with fastapi --with uvicorn --with yfinance python server.py
+
+# 只读代码 / 看站点：clone 公开库（无 data/，起服务会空库）
+git clone https://github.com/PLJKT/ST.git
 ```
 
-仓库自带 `data/st.db` 与全部原始单据，**clone 完就能直接跑**，不需要回券商门户或邮箱取证。要重建库见 `data/README.md`「重建」一节。
+私有库里自带 `data/st.db` 与全部原始单据，**clone 完就能直接跑**，不需要回券商门户或邮箱取证；跑前用 `python tools\verify_data.py` 确认 `data/` 与 `manifest.json` 一致（应为 `PASS`）。要重建库见 `data/README.md`「重建」一节。
+
+公开库只有代码和 `docs/`，clone 后 `data/` 里只有 `universe.csv`，直接起服务会得到空库 —— 这是设计，不是 bug。
 
 ---
 
@@ -288,4 +327,4 @@ uv run --with fastapi --with uvicorn --with yfinance python server.py
 - **富途持仓未按流水重建**：SQQQ/GLD 30 笔成交只进现金；分账户 FIFO −15,917.79 与券商现金口径 −21,188.72 并列未拍板。
 - **收盘价定时任务未创建**：`tools/update_close.py` 就绪，`schtasks` 还没注册；人工价只落本地库，不进静态快照。
 - **静态快照不含 `/api/prices/*`**：线上看到的价源标签是最新一次导出时的状态。
-- **仓库公开**：真实持仓与现金对外可见（用户明确接受）；若改回脱敏需重写历史或转私有仓库。
+- **隐私已分层，但历史不可回收**：旧公开周期（2026-11-09 之前）的仓库已被 fork/缓存可能留存，git 历史无法改写；现在公开面（`PLJKT/ST` 代码 + 站点）已 0 命中身份信息，见 §8.1。

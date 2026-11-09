@@ -218,8 +218,8 @@ app/
   insights.py   时间线 / 偏好画像 / 风险清单 / 下一步动作 / 持仓逐行标注
   metrics.py    交易关键指标汇总（总期与分账户：期间/笔数/盈亏/出入金/持仓时长/回报）
   statement.py  富途资金明细 CSV 导入与现金对账
-  poems.py      POEMS 印尼（ID 账户）单据台账：成交/平仓/持仓/基金/勾稽
-  poems_sg.py   POEMS 新加坡（SG 账户）月结单台账：快照/股息/现金/勾稽
+  poems.py      POEMS 印尼单据台账：成交/平仓/持仓/基金/勾稽
+  poems_sg.py   POEMS 新加坡月结单台账：快照/股息/现金/勾稽
   edit.py       持仓增改删（账户-市场校验、手工来源 id）+ 现金写入
   discipline.py 交易纪律检查：2% 法则 / 集中度 / 总敞口 / 空头 / 杠杆 ETF / 赔率
   risk.py       盘面汇总 / 逐仓止盈止损与概率 / 对冲与回本
@@ -230,9 +230,14 @@ server.py       uvicorn 启动入口（import string，避开 reload 死坑）
 web/            index.html / style.css / app.js / echarts.min.js（单页多 tab）
 tools/          export_static.py（静态快照）/ static_shim.js（fetch 适配层）/
                 update_close.py（收盘价）/ export_data_pack.py（表快照）/
-                manifest_data.py（数据清单）
-data/           原始单据 + 台账 + st.db + 快照，**全部入库**，见 data/README.md
+                manifest_data.py（数据清单）/ verify_data.py（自检）/
+                redact.py（脱敏）/ redact_secrets.py（真实字面量，仅私有库）/
+                redact_audit.py（发布门禁）/ publish_public.py（生成公开镜像）
+data/           原始单据 + 台账 + st.db + 快照，**只在私有库 ST-archive**，见 data/README.md
+docs/           脱敏后的静态快照，随公开库 ST 发布（Pages 源 = main:/docs）
 ```
+
+**两个仓库**：`PLJKT/ST-archive`（私有，全部原始数据，事实来源）与 `PLJKT/ST`（公开，代码 + 脱敏站点，`https://pljkt.github.io/ST/`）。公开库由 `tools/publish_public.py` 生成，发布前必过 `tools/redact_audit.py`（见 DEVELOPMENT.md §8.1）。
 
 ---
 
@@ -270,15 +275,15 @@ data/           原始单据 + 台账 + st.db + 快照，**全部入库**，见 
 | DELETE | `/api/prices/manual?symbol=&market_code=` | 清除人工定价，恢复自动取价 |
 | POST | `/api/prices/refresh` | 跳过 5 分钟缓存，强制重拉全部持仓报价（返回失败清单） |
 | GET | `/api/prices/closes` | 每日收盘价表（由 `tools/update_close.py` 写入） |
-| GET | `/api/poems` | POEMS 印尼（ID 账户）单据台账：成交 56 / 平仓 29 / 持仓 5 / 现金流 / 基金 8 期 / 月度对账 / 4 条 checks，带实时价估值 |
+| GET | `/api/poems` | POEMS 印尼单据台账：成交 56 / 平仓 29 / 持仓 5 / 现金流 / 基金 8 期 / 月度对账 / 4 条 checks，带实时价估值 |
 | POST | `/api/poems/import` | 从 `data/processed/poems.json` 重建 POEMS 台账（幂等） |
 
 ---
 
 ## 已知限制
 
-- **POEMS ID 已由单据重建（2026-11）**：56 个单侧成交、29 个 FIFO 平仓批次、5 行持仓 + 现金 35,342,054.57 IDR，见下文「POEMS 印尼账户（ID 账户）单据台账」。旧 15 行无代码台账已标 `reject` 留档。
-- **POEMS SG 只有 2 期月结单**：2026-11-09 补进 2025-11 与 2026-10 两期月结单（+1 份 2025 股息税单），SG 已恢复 active、权益 8,209.31 USD；但 2025-12 → 2026-09 断档，中间成交流水缺失，**不重建成交与已实现**，见下文「POEMS 新加坡账户（SG 账户）」。
+- **POEMS ID 已由单据重建（2026-11）**：56 个单侧成交、29 个 FIFO 平仓批次、5 行持仓 + 现金 35,342,054.57 IDR，见下文「POEMS 印尼账户单据台账」。旧 15 行无代码台账已标 `reject` 留档。
+- **POEMS SG 只有 2 期月结单**：2026-11-09 补进 2025-11 与 2026-10 两期月结单（+1 份 2025 股息税单），SG 已恢复 active、权益 8,209.31 USD；但 2025-12 → 2026-09 断档，中间成交流水缺失，**不重建成交与已实现**，见下文「POEMS 新加坡账户」。
 - **POEMS SG 回报率仍是 2020–2022 台账口径**：SG 2026 年只有两张持仓快照、没有成交单据，账户卡里的月/年回报来自 267 行旧台账，界面已标「2020–2022 台账口径（2026 期无成交单据）」，不要当成 2026 年的表现。
 - **报价是 Yahoo 快照 + 5 分钟缓存**：不是逐笔 Level-2；交易决策请以券商为准。
 - **中文名覆盖有限**：`aliases.py` 收录约 60 个常用名，其余请用代码搜索。
@@ -321,9 +326,9 @@ data/           原始单据 + 台账 + st.db + 快照，**全部入库**，见 
 - **平均回报**有两个：单笔口径（每笔 `pl_pct / 持仓月数` 的均值，再 ×12 年化）与资金加权口径（已实现 / 净外部投入 / 年数，仅富途可算）。
 - **持仓快照滞后**：台账持仓仍是 2026-09-24 18:04；此后 SQQQ/GLD 的成交（净卖出 36,140.48）只体现在现金里，所以组合页显示「台账权益 → 校正权益」，差额按成交金额估算，不是按数量重建。
 
-## POEMS 印尼账户（ID 账户）单据台账（2026-11 新增）
+## POEMS 印尼账户单据台账（2026-11 新增）
 
-`<local> 里只有 **PT Phillip Sekuritas Indonesia（POEMS ID = ID 账户）** 的单据，一共 62 份 PDF：股票对账单 11 份（2025-11-30 → 2026-09-30）、成交确认 38 份（2026-03-04 → 2026-11-06）、基金对账单 8 份（2026-02 → 2026-10）、现金分红 2 份、开户资料 2 份、研报 1 份。最初**没有任何 POEMS SG（辉立新加坡）单据**；2026-11-09 用户另外补了 3 份 SG 文件（账号 SG 账户），单独入库、见下一节，两个 POEMS 不合并、不互相替代。
+`<local> 里只有 **PT Phillip Sekuritas Indonesia（POEMS ID）** 的单据，一共 62 份 PDF：股票对账单 11 份（2025-11-30 → 2026-09-30）、成交确认 38 份（2026-03-04 → 2026-11-06）、基金对账单 8 份（2026-02 → 2026-10）、现金分红 2 份、开户资料 2 份、研报 1 份。最初**没有任何 POEMS SG（辉立新加坡）单据**；2026-11-09 用户另外补了 3 份 SG 文件（SG 账户），单独入库、见下一节，两个 POEMS 不合并、不互相替代。
 
 处理链：`pypdf` 全量转文本到 `data/raw/poems_txt/` → `poems_parse5.py` 解析（印尼文 `1.570.092,94` 与英文 `12,345.67` 自动识别、成交确认里「价格粘在公司名末尾」按正则从尾部抓、同一 REF# 多行按 `(ref, side, code)` 聚合成单侧成交并按成交额分摊手续费）→ `poems_merge.py` 做 FIFO 平仓、现金、基金 → `data/processed/poems.json` → `app/poems.py` 入库。
 
@@ -354,9 +359,9 @@ data/           原始单据 + 台账 + st.db + 快照，**全部入库**，见 
 - 旧台账里 15 行「无证券代码」的 POEMS ID 持仓标 `quality='reject'` 留档，2026 年单据完全没有复现它们，统计口径统一排除。
 - 货币基金在 `price_overrides` 里以 `PHILLIPMMF.JK` 记 NAV，价源显示「人工」；估值时优先用实时价（`.JK` 后缀，Yahoo 可取 PGAS/PTPP/KIJA/BPTR）。
 
-## POEMS 新加坡账户（SG 账户）月结单台账（2026-11 新增）
+## POEMS 新加坡账户月结单台账（2026-11 新增）
 
-2026-11-09 用户补进 3 份辉立新加坡（Phillip Securities Pte Ltd，`SG 账户/@M`，Margin Account，结算币 USD、以 SGD 折算列示）文件：
+2026-11-09 用户补进 3 份辉立新加坡（Phillip Securities Pte Ltd，Margin Account，结算币 USD、以 SGD 折算列示）文件：
 
 | 文件 | 覆盖期 | 内容 |
 | --- | --- | --- |

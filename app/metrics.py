@@ -253,6 +253,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         if aid == "poems_id":
             tags.append({"k": "成交确认", "v": f"{s.get('trade_count') or 0} 笔"})
             tags.append({"k": "对账期末", "v": "2026-09-30"})
+            tags.append({"k": "缺 PGAS 回款", "v": "10,000 股已清仓 · 现金未入"})
             if extra.get("mf_units"):
                 tags.append({"k": "货币基金", "v": f"{extra['mf_units']:,.0f} 份"})
         accounts.append({"id": aid, "name": name, **s, **extra, "tags": tags})

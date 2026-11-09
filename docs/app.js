@@ -933,12 +933,15 @@ function renderMetrics(m) {
 
   const st = m.statement || {};
   const br = m.pnl_bridge || {};
-  $("#mxBridgeTag").textContent = `可验证 ${signed(br.verified || 0)} · 记忆 ${signed(br.memory || 0)}`;
+  $("#mxBridgeTag").textContent = `全历史 ${signed(br.verified || 0)} · 记忆 ${signed(br.memory || 0)} · 差 ${signed(br.gap || 0)}`;
   $("#mxBridge").querySelector("tbody").innerHTML = (br.rows || []).map(r => {
     const lv = { ok: "ok", warn: "warn", danger: "off", ref: "info" }[r.level] || "info";
-    const lb = { ok: "券商可验证", warn: "口径注意", danger: "对不上", ref: "小计" }[r.level] || r.level;
+    const lb = { ok: "凭证完整", warn: "口径注意", danger: "对不上", ref: "合计" }[r.level] || r.level;
     return `<tr><td>${r.k} ${chip(lb, lv)}</td><td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td>${r.n}</td></tr>`;
   }).join("");
+  if ($("#mxBridgeNote")) {
+    $("#mxBridgeNote").innerHTML = (br.coverage || []).map(c => `<span>${c}</span>`).join("");
+  }
   const buckets = [
     ["外部存入", st.deposit?.usd, "银行转存 5 笔", "in"],
     ["外部取出", st.withdraw?.usd, "银行转取 2 笔", "out"],

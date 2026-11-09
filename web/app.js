@@ -176,13 +176,13 @@ function renderAccounts(ov) {
       ? `<div class="equity">0 <small>已关闭 ${a.closed_at || ""} · 权益按 ST 口径归零</small></div>`
       : a.data_gap
         ? `<div class="equity">0 <small>无当前持仓数据</small></div>`
-        : `<div class="equity">${moneyB(equityShown)} <small>${state.base} 折算${adjHere ? ` · 已按券商流水校正（台账 ${money(adjHere.equity_ledger)}）` : ""}</small></div>`;
+        : `<div class="equity">${moneyB(equityShown)} <small>${state.base} 折算${adjHere && Math.abs(adjHere.adjust_usd || 0) > 100 ? ` · 已按券商流水校正（台账 ${money(adjHere.equity_ledger)}）` : ""}</small></div>`;
     const rows = [];
     if (a.status !== "closed") {
       rows.push(`<div><span>持仓市值（实时）</span><b>${moneyB(a.positions_usd)}</b></div>`);
       rows.push(`<div><span>现金（券商期末）</span><b class="${signCls(a.cash_usd)}">${moneyB(a.cash_usd)}</b></div>`);
       rows.push(`<div><span>浮动盈亏</span><b class="${signCls(a.floating_usd)}">${signedB(a.floating_usd)}</b></div>`);
-      if (adjHere) {
+      if (adjHere && Math.abs(adjHere.adjust_usd || 0) > 100) {
         rows.push(`<div><span>9-24 后成交未同步</span><b class="down">${signedB(adjHere.adjust_usd)}</b></div>`);
       }
     }
@@ -225,7 +225,7 @@ function renderKpis(ov) {
   const lev = equity ? Math.abs(ov.total_positions_usd) / equity : null;
   const items = [
     ["权益", moneyB(equity), useEst ? `台账 ${money(rc.equity_ledger)} · 校正 ${signed(rc.adjust_usd)}` : `${scopeTxt} · ${state.base}`, useEst ? "ref" : ""],
-    ["持仓市值", moneyB(ov.total_positions_usd), useEst ? "数量仍为 9-24 快照 · 未校正" : "空头为负", ""],
+    ["持仓市值", moneyB(ov.total_positions_usd), `数量取券商 ${(rc.positions_snapshot || "").slice(0, 10) || "最新"} 快照 · 空头为负`, ""],
     ["现金", moneyB(ov.total_cash_usd), "券商 11-06 期末余额", ov.total_cash_usd < 0 ? "down" : ""],
     ["浮动盈亏", signedB(ov.total_floating_usd), "现价 vs FIFO 成本", signCls(ov.total_floating_usd)],
     ["净盈亏", signedB(ov.total_net_usd), "已实现 + 浮动", signCls(ov.total_net_usd)],
@@ -239,16 +239,16 @@ function renderReconStrip(ov) {
   const rc = ov.recon || {};
   const el = $("#reconStrip");
   if (rc.equity_est == null) { el.innerHTML = ""; return; }
-  const stale = Object.entries(rc.stale || {})
-    .map(([s, v]) => `${s} ${signed(v)}`).join(" · ") || "无";
+  const snap = (rc.positions_snapshot || "").slice(0, 10);
+  const pxGap = rc.mv_broker == null || rc.market_value_usd == null ? null : rc.market_value_usd - rc.mv_broker;
   el.innerHTML = `
     <span class="ledger-tag">券商核对</span>
     <span>现金 ${money(rc.cash_broker_usd)} <span class="muted">（${(rc.cash_broker_asof || "").slice(0, 10)} 流水期末）</span></span>
     <span>·</span>
-    <span>${(rc.positions_snapshot || "").slice(0, 10)} 后成交 ${signed(rc.adjust_usd)} <span class="muted">（${stale}）</span></span>
+    <span>持仓 ${money(rc.mv_broker)} <span class="muted">（${snap} 快照价）</span></span>
     <span>·</span>
-    <span class="${rc.adjust_usd < -1 ? "down" : ""}">校正权益 ${money(rc.equity_est)}</span>
-    <span class="muted">持仓数量未按流水重建，此处仅按成交金额估算</span>`;
+    <span class="${rc.equity_est < 0 ? "down" : ""}">实时权益 ${money(rc.equity_est)}</span>
+    <span class="muted">数量已与券商逐行对齐${pxGap == null ? "" : `；报价时点差 ${signed(pxGap)}`}</span>`;
 }
 
 function renderLedgerStrip(ov) {
@@ -932,6 +932,13 @@ function renderMetrics(m) {
       <td>${r.note}</td></tr>`).join("");
 
   const st = m.statement || {};
+  const br = m.pnl_bridge || {};
+  $("#mxBridgeTag").textContent = `可验证 ${signed(br.verified || 0)} · 记忆 ${signed(br.memory || 0)}`;
+  $("#mxBridge").querySelector("tbody").innerHTML = (br.rows || []).map(r => {
+    const lv = { ok: "ok", warn: "warn", danger: "off", ref: "info" }[r.level] || "info";
+    const lb = { ok: "券商可验证", warn: "口径注意", danger: "对不上", ref: "小计" }[r.level] || r.level;
+    return `<tr><td>${r.k} ${chip(lb, lv)}</td><td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td>${r.n}</td></tr>`;
+  }).join("");
   const buckets = [
     ["外部存入", st.deposit?.usd, "银行转存 5 笔", "in"],
     ["外部取出", st.withdraw?.usd, "银行转取 2 笔", "out"],

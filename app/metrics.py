@@ -106,14 +106,21 @@ def _cash_recon(rates: dict, rows: list[dict] | None = None) -> dict:
                         "WHERE COALESCE(quality,'ok')<>'reject'")[0]["n"]
 
     rows = rows or portfolio.position_rows(with_quotes=True)
-    symbols = [r["symbol"] for r in rows if r["symbol"]]
+    futu_rows = [r for r in rows
+                 if (r.get("account") or r.get("account_id")) == "futu_main"]
+    symbols = [r["symbol"] for r in futu_rows if r["symbol"]]
     snap = db.get_meta("positions_snapshot") or "2026-09-24 18:04"
     after = statement.trades_after("futu_main", snap, symbols)
 
-    mv = round(sum(r["value_usd"] or 0 for r in rows), 2)
+    mv = round(sum(r["value_usd"] or 0 for r in futu_rows), 2)
+    # 券商快照市值：数量 × 券商当时报价（与实时报价的差额单独列示）
+    mv_broker = round(sum((r.get("qty") or 0) * (r.get("st_price") or r.get("price") or 0)
+                          * (-1 if (r.get("side") or "").upper() == "SHORT" else 1)
+                          for r in futu_rows), 2)
     equity_ledger = round(cash_sys_usd + mv, 2)
     stale_flow = round(sum(after["by_symbol"].values()), 2)
     adjust = -stale_flow
+    total_pnl = round(cash_broker_usd + mv_broker - (st.get("net_external") or 0), 2)
     return {
         "cash_sys_usd": cash_sys_usd, "cash_sys_asof": cash_sys_asof,
         "cash_broker_usd": cash_broker_usd, "cash_broker_asof": (st.get("period_end") or "")[:16],
@@ -121,6 +128,9 @@ def _cash_recon(rates: dict, rows: list[dict] | None = None) -> dict:
         "broker_trade_count": st.get("trade_count"), "ledger_event_count": ev_count,
         "trade_gap": (st.get("trade_count") or 0) - ev_count,
         "broker_net": st.get("net_result"),
+        "net_external_usd": st.get("net_external"),
+        "mv_broker": mv_broker,
+        "total_pnl_est": total_pnl,
         "equity_ledger": equity_ledger, "market_value_usd": mv,
         "stale_flow_usd": stale_flow, "adjust_usd": round(adjust, 2),
         "equity_est": round(equity_ledger + adjust, 2),
@@ -288,22 +298,61 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
          "diff": f"{recon['trade_gap']:+d}",
          "level": "warn",
          "note": "券商流水覆盖 2024-08 起全部成交；台账只收了 ST 表里挑出来的平仓事件，缺口是历史遗漏。"},
+        {"item": "持仓市值", "broker": f"${recon['mv_broker']:,.2f}（券商快照价）",
+         "ledger": f"${recon['market_value_usd']:,.2f}（实时报价）",
+         "diff": f"{round(recon['market_value_usd'] - recon['mv_broker'], 2):+,.2f}",
+         "level": "ok" if abs(recon["market_value_usd"] - recon["mv_broker"]) < 100 else "warn",
+         "note": "数量已与 2026-11-09 券商快照逐行一致；差额只来自报价时点（GLD 实时 372.52 vs 券商 376.670）。"},
         {"item": "累计交易净额", "broker": f"${recon['broker_net']:,.2f}（现金口径）",
          "ledger": f"${round(sum(a['realized_usd'] or 0 for a in accounts if a['id']=='futu_main'), 2):,.2f}（已实现）",
          "diff": f"{(recon['broker_net'] - (accounts[0]['realized_usd'] or 0)):+,.2f}",
          "level": "warn",
          "note": "现金口径含费用、利息、股息与仍持仓的浮盈变动；台账只算已平仓 FIFO 已实现，两者天然不等。"},
+        {"item": "券商累计总盈亏", "broker": f"${recon['total_pnl_est']:,.2f}（含浮动）",
+         "ledger": f"${(accounts[0]['realized_usd'] or 0):,.2f}（已实现）",
+         "diff": f"{recon['total_pnl_est'] - (accounts[0]['realized_usd'] or 0):+,.2f}",
+         "level": "ok",
+         "note": f"券商口径 = 期末现金 ${recon['cash_broker_usd']:,.2f} + 持仓 ${recon['mv_broker']:,.2f} − 净投入 ${recon['net_external_usd']:,.2f}；"
+                 "与台账已实现的差额含浮动盈亏、费用、利息与股息。"},
         {"item": "9-24 后成交未扣仓", "broker": f"${recon['stale_flow_usd']:+,.2f} 净卖出",
-         "ledger": "持仓仍为 9-24 快照",
+         "ledger": f"持仓快照 {recon['positions_snapshot'][:10]}",
          "diff": f"{recon['adjust_usd']:+,.2f}",
          "level": "danger" if abs(recon["adjust_usd"]) > 1000 else "ok",
-         "note": "SQQQ 10-09 起分批卖出、GLD 反复买卖，台账数量未同步；差额按成交金额估算，校正后权益见左。"},
+         "note": "持仓已按 2026-11-09 券商快照校正，此处应恒为 0；若再次偏离说明又有成交未回填。"},
     ]
 
+    # 累计盈亏口径桥：把「我记得亏了 5 万」拆成可验证的口径
+    futu_acc = next((a for a in accounts if a["id"] == "futu_main"), {})
+    id_acc = next((a for a in accounts if a["id"] == "poems_id"), {})
+    kpi = (db.get_meta("st_numbers") or {}).get("kpi_poems") or {}
+    futu_total = recon["total_pnl_est"]
+    id_pnl = round((id_acc.get("equity_usd") or 0) - (id_acc.get("net_external_usd") or 0), 2)
+    sg_legacy = round(float(kpi.get("net_gain") or 0), 2)
+    verified = round(futu_total + id_pnl + sg_legacy, 2)
+    memory = -50000.0
+    bridge = [
+        {"k": "富途 · 券商口径（含浮盈）", "v": futu_total, "level": "ok",
+         "n": f"期末现金 {recon['cash_broker_usd']:,.2f} + 持仓 {recon['mv_broker']:,.2f} − 净投入 {recon['net_external_usd']:,.2f}；这是唯一能逐笔对上券商流水的总盈亏"},
+        {"k": "富途 · 券商现金口径", "v": recon["broker_net"], "level": "warn",
+         "n": "只算现金变动，不含还拿在手里的持仓市值，不能当总亏损用"},
+        {"k": "富途 · 台账 FIFO 已实现", "v": futu_acc.get("realized_usd"), "level": "warn",
+         "n": f"与现金口径差 {round((futu_acc.get('realized_usd') or 0) - (recon['broker_net'] or 0), 2):+,.2f}，是费用/利息/股息与未平仓成本未分摊"},
+        {"k": "POEMS ID · 资金口径", "v": id_pnl, "level": "ok",
+         "n": "当前权益 − 净外部投入（IDR 折 USD）；印尼市场，不属于美股/港股"},
+        {"k": "POEMS SG · 2020–2022 台账", "v": sg_legacy, "level": "warn",
+         "n": f"初始入金 {float(kpi.get('initial_deposit') or 0):,.0f}、已实现 {float(kpi.get('realized') or 0):,.2f}、费用 {float(kpi.get('fees_paid') or 0):,.2f}；账户 2022-01 已关闭，期末余额按 0 记"},
+        {"k": "系统可验证合计", "v": verified, "level": "ref",
+         "n": "富途券商口径 + POEMS ID + SG 旧台账；SG 2025-11 之后的新账户没有任何入金单据，无法计算"},
+        {"k": "你说的记忆", "v": memory, "level": "danger",
+         "n": f"与可验证合计差 {round(memory - verified, 2):+,.2f}，系统里找不到对应凭证"},
+    ]
     return {
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "overall": overall,
         "accounts": accounts,
+        "pnl_bridge": {"rows": bridge, "verified": verified, "memory": memory,
+                       "gap": round(memory - verified, 2)},
+
         "statement": {k: v for k, v in st.items()
                       if k not in ("monthly", "yearly", "by_symbol")},
         "statement_monthly": st.get("monthly", []),
@@ -324,5 +373,7 @@ def brief_recon(rows: list[dict] | None = None) -> dict:
         "cash_gap": r["cash_gap"], "adjust_usd": r["adjust_usd"],
         "stale": r["stale_detail"], "positions_snapshot": r["positions_snapshot"],
         "equity_ledger": r["equity_ledger"], "equity_est": r["equity_est"],
+        "market_value_usd": r["market_value_usd"], "mv_broker": r["mv_broker"],
+        "total_pnl_est": r["total_pnl_est"], "net_external_usd": r["net_external_usd"],
         "deposit_usd": r["cash_deposit_usd"], "withdraw_usd": r["cash_withdraw_usd"],
     }

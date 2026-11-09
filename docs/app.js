@@ -412,7 +412,7 @@ function renderNav(points) {
       valueFormatter: v => (v == null ? "—" : ccSym() + nf.format(v)),
     },
     legend: { show: true, data: ["POEMS 月度权益"], textStyle: { color: "#8b9bb4", fontSize: 11 }, top: 0, right: 4 },
-    grid: { left: 62, right: 82, top: 36, bottom: 28 },
+    grid: { left: 10, right: 96, top: 36, bottom: 28, containLabel: true },
     xAxis: { type: "category", data: x, boundaryGap: false, axisLine: { lineStyle: { color: "#1f2a3a" } },
       axisTick: { show: false },
       axisLabel: { color: "#5f6f88", fontSize: 10, hideOverlap: false,
@@ -425,8 +425,8 @@ function renderNav(points) {
         lineStyle: { color: "#4f8cff", width: 2 }, itemStyle: { color: "#4f8cff" },
         areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
           { offset: 0, color: "rgba(79,140,255,0.30)" }, { offset: 1, color: "rgba(79,140,255,0.02)" }]) },
-        endLabel: { show: true, color: "#dbe6f5", fontSize: 11, fontWeight: 600, distance: 8,
-          formatter: p => ccSym() + nf.format(p.value) } },
+        endLabel: { show: true, color: "#dbe6f5", fontSize: 11, fontWeight: 600, distance: 6,
+          formatter: p => ccSym() + nf0.format(p.value) } },
     ],
   };
   state.chartNav.setOption(opt, true);
@@ -460,7 +460,11 @@ function renderMarkets(markets) {
   };
   state.chartMkt.setOption(opt, true);
   const c = $("#mktCenter");
-  if (c) c.innerHTML = `<span class="dc-k">持仓市值</span><b class="dc-v">${moneyB(rows.reduce((s, r) => s + r.usd, 0))}</b>`;
+  if (c) {
+    const sumUsd = rows.reduce((s, r) => s + r.usd, 0);
+    const nfB = state.base === "IDR" ? nf0 : mny2;
+    c.innerHTML = `<span class="dc-k">持仓市值 · ${state.base}</span><b class="dc-v">${nfB.format(toBase(sumUsd))}</b>`;
+  }
   const lg = $("#mktLegend");
   if (lg) lg.innerHTML = rows.map(r => `
     <div class="lg-row">
@@ -543,7 +547,7 @@ function renderWaterfall(br) {
         return `<b>${labels[i]}</b><br/>${signedB(raw[i])}`;
       },
     },
-    grid: { left: 62, right: 16, top: 22, bottom: 42 },
+    grid: { left: 8, right: 18, top: 22, bottom: 42, containLabel: true },
     xAxis: { type: "category", data: labels,
       axisLine: { lineStyle: { color: "#1f2a3a" } }, axisTick: { show: false },
       axisLabel: { color: "#8b9bb4", fontSize: 10.5, interval: 0, lineHeight: 14, formatter: v => v } },

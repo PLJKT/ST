@@ -412,7 +412,7 @@ function renderNav(points) {
       valueFormatter: v => (v == null ? "—" : ccSym() + nf.format(v)),
     },
     legend: { show: true, data: ["POEMS 月度权益"], textStyle: { color: "#8b9bb4", fontSize: 11 }, top: 0, right: 4 },
-    grid: { left: 62, right: 46, top: 36, bottom: 28 },
+    grid: { left: 62, right: 82, top: 36, bottom: 28 },
     xAxis: { type: "category", data: x, boundaryGap: false, axisLine: { lineStyle: { color: "#1f2a3a" } },
       axisTick: { show: false },
       axisLabel: { color: "#5f6f88", fontSize: 10, hideOverlap: false,

@@ -367,8 +367,8 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
          "n": f"现值 {float(id_acc.get('equity_usd') or 0):,.2f} + PGAS 回款 {pgas_usd:,.2f} − 净投入 {float(id_acc.get('net_external_usd') or 0):,.2f}（IDR 折 USD，汇率 {idr:,.2f}）"},
         {"k": "全历史合计（逐段相加）", "v": total, "level": "ref",
          "n": f"2020-02 → 2026-11-09 全部账户；交叉校验：外部净投入 {sg_start + futu_bank + sg_cost + float(id_acc.get('net_external_usd') or 0):,.2f} "
-                 f"vs 现值 {float(futu_acc.get('equity_usd') or 0) + float(sg_acc.get('equity_usd') or 0) + float(id_acc.get('equity_usd') or 0) + pgas_usd:,.2f}"
-                 f" = {float(futu_acc.get('equity_usd') or 0) + float(sg_acc.get('equity_usd') or 0) + float(id_acc.get('equity_usd') or 0) + pgas_usd - (sg_start + futu_bank + sg_cost + float(id_acc.get('net_external_usd') or 0)):,.2f}"},
+                 f"vs 现值 {recon['cash_broker_usd'] + recon['mv_broker'] + float(sg_acc.get('equity_usd') or 0) + float(id_acc.get('equity_usd') or 0) + pgas_usd:,.2f}"
+                 f" = {round(recon['cash_broker_usd'] + recon['mv_broker'] + float(sg_acc.get('equity_usd') or 0) + float(id_acc.get('equity_usd') or 0) + pgas_usd - (sg_start + futu_bank + sg_cost + float(id_acc.get('net_external_usd') or 0)), 2):,.2f}"},
         {"k": "你说的记忆 · 约 −5 万", "v": memory, "level": "danger",
          "n": f"与全历史合计差 {round(memory - total, 2):+,.2f}。这个数实际来自旧仪表盘的「回本缺口 {float(old.get('gap') or 49293.65):,.2f}」："
                  f"本金 {float(old.get('principal') or 66062.97):,.2f} 里把 2024-08 迁移的 {mig_net:,.2f} 和 SG 的 23,110 重复算了两次；"

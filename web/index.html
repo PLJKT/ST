@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ST v5 · 一个账本，两个门面</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b5cff'/%3E%3Ctext x='16' y='22' font-size='16' font-family='Arial' font-weight='700' fill='white' text-anchor='middle'%3EST%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=76">
+<link rel="stylesheet" href="style.css?v=82">
 </head>
 <body>
 <header class="topbar">
@@ -97,15 +97,25 @@
       </div>
     </div>
 
-    <div class="grid2">
-      <div class="panel">
-        <div class="panel-head"><h2>净值曲线</h2><span class="hint">POEMS 月度台账 + FUTU 期末单点</span></div>
+    <div class="viz-grid">
+      <div class="panel viz-wide">
+        <div class="panel-head"><h2>POEMS 旧户净值</h2><span class="hint">2020-02 → 2022-01 月度台账 · 该户已结清（富途只有期末单点，不入此曲线）</span></div>
         <div id="navChart" class="chart"></div>
       </div>
       <div class="panel">
-        <div class="panel-head"><h2>市场分布</h2><span class="hint">按合并市值</span></div>
-        <div id="mktChart" class="chart"></div>
+        <div class="panel-head"><h2>市场分布</h2><span class="hint" id="mktHint">按合并市值绝对值</span></div>
+        <div class="donut-wrap">
+          <div id="mktChart" class="chart"></div>
+          <div class="donut-center" id="mktCenter"></div>
+        </div>
+        <div id="mktLegend" class="viz-legend"></div>
       </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>资金结构</h2><span class="hint" id="mixHint">各账户 · 现金 / 持仓（USD 折算）</span></div>
+      <div id="mixChart" class="mix-bars"></div>
+      <div id="mixLegend" class="viz-legend inline"></div>
     </div>
 
     <div class="grid2">
@@ -229,6 +239,7 @@
           <h3>全历史盈亏 · 分段对账</h3>
           <span class="chip info" id="mxBridgeTag">核对「亏了 5 万」</span>
         </div>
+        <div id="bridgeChart" class="chart short"></div>
         <div class="table-wrap">
           <table class="grid compact mx-recon" id="mxBridge">
             <thead><tr><th>期间 / 账户</th><th class="num">金额 USD</th><th>说明 / 证据</th></tr></thead>
@@ -518,6 +529,6 @@
 </footer>
 
 <script src="echarts.min.js?v=56"></script>
-<script src="app.js?v=81"></script>
+<script src="app.js?v=82"></script>
 </body>
 </html>

@@ -16,6 +16,7 @@ const state = {
   chartNav: null,
   chartMkt: null,
   chartSym: null,
+  chartBridge: null,
   warmTimer: null,
 };
 
@@ -36,6 +37,7 @@ function setStatus(t) { $("#status").textContent = t; }
 
 const nf = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 const nf0 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const mny2 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function decimals(ccy) {
   if (ccy === "IDR" || ccy === "JPY" || ccy === "KRW") return 0;
@@ -44,7 +46,7 @@ function decimals(ccy) {
 function money(v, ccy = "USD") {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   const d = decimals(ccy);
-  return (ccy && ccy !== "USD" ? ccy + " " : "$") + (d ? nf.format(v) : nf0.format(v));
+  return (ccy && ccy !== "USD" ? ccy + " " : "$") + (d ? mny2.format(v) : nf0.format(v));
 }
 function num(v, d = 2) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
@@ -137,6 +139,7 @@ async function loadPortfolio(refresh = false) {
     renderSymbols(syms);
     renderNav(nav);
     renderMarkets(ov.markets);
+    renderMix(ov);
     syncAccountSelect(ov.accounts);
     setStatus("已更新 · " + (ov.as_of || "").slice(11));
     $("#footMeta").textContent = `台账生成 ${ov.st_reference?.as_of || "—"} · 折算 ${ov.fx_note ? "实时汇率" : ""}`;
@@ -391,53 +394,172 @@ function renderSymbols(rows) {
     </tr>`).join("");
 }
 
+const VIZ_COLORS = ["#4f8cff", "#2ee6a8", "#ffb454", "#a78bfa", "#59c3e6", "#ff6b6b", "#8b9bb4"];
+
 function renderNav(points) {
   if (!state.chartNav) state.chartNav = echarts.init($("#navChart"));
   const poems = points.filter(p => p.account_id === "poems_sg").sort((a, b) => a.as_of.localeCompare(b.as_of));
-  const futu = points.filter(p => p.account_id === "futu_main");
-  const x = [...new Set(points.map(p => p.as_of))].sort();
+  const x = poems.map(p => p.as_of);
+  const pv = poems.map(p => toBase(p.equity));
   const opt = {
     backgroundColor: "transparent",
     animation: false,
-    tooltip: { trigger: "axis" },
-    legend: { data: ["POEMS 月度权益", "FUTU 期末权益"], textStyle: { color: "#8b9bb4" }, top: 0 },
-    grid: { left: 54, right: 18, top: 34, bottom: 28 },
-    xAxis: { type: "category", data: x, axisLine: { lineStyle: { color: "#1f2a3a" } },
-      axisLabel: { color: "#5f6f88", fontSize: 10,
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "#101826",
+      borderColor: "#243247",
+      textStyle: { color: "#dbe6f5", fontSize: 11 },
+      valueFormatter: v => (v == null ? "—" : ccSym() + nf.format(v)),
+    },
+    legend: { show: true, data: ["POEMS 月度权益"], textStyle: { color: "#8b9bb4", fontSize: 11 }, top: 0, right: 4 },
+    grid: { left: 62, right: 46, top: 36, bottom: 28 },
+    xAxis: { type: "category", data: x, boundaryGap: false, axisLine: { lineStyle: { color: "#1f2a3a" } },
+      axisTick: { show: false },
+      axisLabel: { color: "#5f6f88", fontSize: 10, hideOverlap: false,
         interval: (i) => i === 0 || i === x.length - 1 || String(x[i]).slice(0, 4) !== String(x[i - 1]).slice(0, 4) } },
-    yAxis: { type: "value", scale: true, axisLabel: { color: "#5f6f88", fontSize: 10 }, splitLine: { lineStyle: { color: "#17202e" } } },
+    yAxis: { type: "value", scale: true, axisLabel: { color: "#5f6f88", fontSize: 10 },
+      splitLine: { lineStyle: { color: "#17202e" } } },
     series: [
-      { name: "POEMS 月度权益", type: "line", smooth: true, symbol: "circle", symbolSize: 4,
-        data: x.map(k => { const r = poems.find(p => p.as_of === k); return r ? toBase(r.equity) : null; }),
-        lineStyle: { color: "#4f8cff", width: 2 }, itemStyle: { color: "#4f8cff" } },
-      { name: "FUTU 期末权益", type: "scatter", symbolSize: 9,
-        data: x.map(k => { const r = futu.find(p => p.as_of === k); return r ? toBase(r.equity) : null; }),
-        itemStyle: { color: "#2ee6a8" } },
+      { name: "POEMS 月度权益", type: "line", smooth: true, symbol: "circle", symbolSize: 5,
+        data: pv,
+        lineStyle: { color: "#4f8cff", width: 2 }, itemStyle: { color: "#4f8cff" },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: "rgba(79,140,255,0.30)" }, { offset: 1, color: "rgba(79,140,255,0.02)" }]) },
+        endLabel: { show: true, color: "#dbe6f5", fontSize: 11, fontWeight: 600, distance: 8,
+          formatter: p => ccSym() + nf.format(p.value) } },
     ],
   };
   state.chartNav.setOption(opt, true);
   $("#navChart").dataset.dbg = JSON.stringify({ points: points.length, poems: poems.length,
-    x: x.length, d0: opt.series[0].data.slice(0, 3), d1: opt.series[1].data.slice(0, 3) });
+    x: x.length, d0: pv.slice(0, 3) });
 }
-
 function renderMarkets(markets) {
-  if (!state.chartMkt) state.chartMkt = echarts.init($("#mktChart"));
+  const el = $("#mktChart");
+  if (!state.chartMkt) state.chartMkt = echarts.init(el);
+  const rows = markets.map((m, i) => ({
+    name: m.name,
+    usd: m.value_usd,
+    abs: Math.abs(toBase(m.value_usd)),
+    color: VIZ_COLORS[i % VIZ_COLORS.length],
+  })).filter(r => r.abs > 0.005);
+  const total = rows.reduce((s, r) => s + r.abs, 0) || 1;
   const opt = {
     backgroundColor: "transparent",
     animation: false,
-    tooltip: { trigger: "axis", formatter: p => `${p[0].name}<br/>净市值 ${ccSym()}${nf.format(p[0].value)}` },
-    grid: { left: 74, right: 24, top: 12, bottom: 22 },
-    xAxis: { type: "value", axisLabel: { color: "#5f6f88", fontSize: 10 }, splitLine: { lineStyle: { color: "#17202e" } } },
-    yAxis: { type: "category", data: markets.map(m => m.name), axisLabel: { color: "#8b9bb4", fontSize: 11 }, axisLine: { lineStyle: { color: "#1f2a3a" } } },
+    tooltip: {
+      backgroundColor: "#101826", borderColor: "#243247",
+      textStyle: { color: "#dbe6f5", fontSize: 11 },
+      formatter: p => `${p.name}<br/>${ccSym()}${nf.format(p.value)} · ${(p.value / total * 100).toFixed(1)}%`,
+    },
     series: [{
-      type: "bar", barWidth: 20,
-      data: markets.map(m => ({ value: toBase(m.value_usd), itemStyle: { color: m.value_usd < 0 ? "#ff6b6b" : (m.tradable ? "#4f8cff" : "#5f6f88") } })),
-      label: { show: true, position: "inside", color: "#0b0f17", fontSize: 10, fontWeight: 600,
-        formatter: p => (p.value < 0 ? "−" : "") + ccSym() + nf0.format(Math.abs(p.value || 0)) },
+      type: "pie", radius: ["54%", "80%"], center: ["50%", "50%"], avoidLabelOverlap: true,
+      itemStyle: { borderColor: "#0d1420", borderWidth: 2 },
+      label: { show: false }, labelLine: { show: false },
+      data: rows.map(r => ({ name: r.name, value: r.abs, itemStyle: { color: r.color } })),
     }],
   };
   state.chartMkt.setOption(opt, true);
-  $("#mktChart").dataset.dbg = JSON.stringify({ n: markets.length, d: opt.series[0].data });
+  const c = $("#mktCenter");
+  if (c) c.innerHTML = `<span class="dc-k">持仓市值</span><b class="dc-v">${moneyB(rows.reduce((s, r) => s + r.usd, 0))}</b>`;
+  const lg = $("#mktLegend");
+  if (lg) lg.innerHTML = rows.map(r => `
+    <div class="lg-row">
+      <i style="background:${r.color}"></i>
+      <span class="lg-name">${r.name}</span>
+      <b class="lg-val">${moneyB(r.usd)}</b>
+      <span class="lg-pct">${(r.abs / total * 100).toFixed(1)}%</span>
+    </div>`).join("");
+  $("#mktChart").dataset.dbg = JSON.stringify({ n: markets.length, d: rows.map(r => r.abs) });
+}
+
+function renderMix(ov) {
+  const el = $("#mixChart");
+  if (!el) return;
+  const acts = (ov.accounts || []).filter(a => a.status !== "closed" && !a.data_gap);
+  const rows = acts.map(a => ({ name: a.name, cash: toBase(a.cash_usd || 0), pos: toBase(a.positions_usd || 0) }));
+  const tot = rows.reduce((s, r) => ({ cash: s.cash + r.cash, pos: s.pos + r.pos }), { cash: 0, pos: 0 });
+  const scale = Math.max(...rows.map(r => Math.max(0, r.cash) + Math.max(0, r.pos)), 1);
+  const one = (r, cls = "") => {
+    const c = Math.max(0, r.cash), p = Math.max(0, r.pos), t = c + p;
+    return `<div class="mix-row ${cls}">
+      <div class="mix-name">${r.name}</div>
+      <div class="mix-track" title="现金 ${money(r.cash, state.base)} · 持仓 ${money(r.pos, state.base)}">
+        <i class="seg cash" style="width:${(c / scale * 100).toFixed(2)}%"></i>
+        <i class="seg pos" style="width:${(p / scale * 100).toFixed(2)}%"></i>
+      </div>
+      <div class="mix-nums"><b>${money(r.cash + r.pos, state.base)}</b>
+        <span class="muted">现金 ${money(r.cash, state.base)} · 持仓 ${money(r.pos, state.base)}</span></div>
+    </div>`;
+  };
+  el.innerHTML = rows.map(r => one(r)).join("")
+    + (rows.length > 1 ? one({ name: "三账户合计", cash: tot.cash, pos: tot.pos }, "total") : "");
+  const h = $("#mixHint");
+  if (h) h.textContent = `各账户 · 现金 / 持仓（${state.base} 折算，同一比例尺）`;
+  const lg = $("#mixLegend");
+  if (lg) lg.innerHTML = `<span class="lg-dot" style="background:#2ee6a8"></span>现金 ${money(tot.cash, state.base)}
+    <span class="lg-dot" style="background:#4f8cff"></span>持仓 ${money(tot.pos, state.base)}
+    <span class="muted">合计 ${money(tot.cash + tot.pos, state.base)}</span>`;
+}
+function renderWaterfall(br) {
+  const el = $("#bridgeChart");
+  if (!el || !br || !br.rows) return;
+  if (!state.chartBridge) state.chartBridge = echarts.init(el);
+  const comps = br.rows.filter(r => r.level !== "ref" && r.level !== "danger");
+  const total = br.rows.find(r => r.level === "ref");
+  let cum = 0;
+  const labels = [], base = [], delta = [], colors = [], raw = [];
+  comps.forEach(r => {
+    const parts = String(r.k).split("·");
+    let acct = parts[0].trim()
+      .replace("POEMS SG 旧户", "SG旧户").replace("POEMS SG 新户", "SG新户")
+      .replace("POEMS ID", "ID").replace("富途 1599", "富途")
+      .replace("全历史合计（逐段相加）", "合计").replace(/\s+/g, "");
+    const tail = (parts[1] || "").replace(/\d{4}-\d{2}→\d{4}-\d{2}/, "").trim();
+    const tag = tail.includes("已实现") ? "已实现" : tail.includes("浮亏") ? "浮亏"
+      : tail.includes("券商口径") ? "券商口径" : tail.includes("资金口径") ? "资金口径" : "";
+    labels.push(tag ? acct + "\n" + tag : acct);
+    base.push(toBase(Math.min(cum, cum + r.v)));
+    delta.push(Math.abs(toBase(r.v)));
+    raw.push(r.v);
+    colors.push(r.v >= 0 ? "#2ee6a8" : "#ff6b6b");
+    cum += r.v;
+  });
+  if (total) {
+    labels.push("合计");
+    base.push(toBase(Math.min(0, total.v)));
+    delta.push(Math.abs(toBase(total.v)));
+    raw.push(total.v);
+    colors.push(total.v >= 0 ? "#2ee6a8" : "#4f8cff");
+    cum = total.v;
+  }
+  const opt = {
+    backgroundColor: "transparent",
+    animation: false,
+    tooltip: {
+      trigger: "axis", axisPointer: { type: "shadow" },
+      backgroundColor: "#101826", borderColor: "#243247", textStyle: { color: "#dbe6f5", fontSize: 11 },
+      formatter: ps => {
+        const i = ps[0].dataIndex;
+        return `<b>${labels[i]}</b><br/>${signedB(raw[i])}`;
+      },
+    },
+    grid: { left: 62, right: 16, top: 22, bottom: 42 },
+    xAxis: { type: "category", data: labels,
+      axisLine: { lineStyle: { color: "#1f2a3a" } }, axisTick: { show: false },
+      axisLabel: { color: "#8b9bb4", fontSize: 10.5, interval: 0, lineHeight: 14, formatter: v => v } },
+    yAxis: { type: "value",
+      splitLine: { lineStyle: { color: "#17202e" } },
+      axisLabel: { color: "#5f6f88", fontSize: 10, formatter: v => (v === 0 ? "0" : (v > 0 ? "+" : "−") + nf0.format(Math.abs(v))) } },
+    series: [
+      { name: "base", type: "bar", stack: "wf", silent: true, barWidth: 26,
+        itemStyle: { color: "transparent", borderWidth: 0 }, data: base, tooltip: { show: false } },
+      { name: "delta", type: "bar", stack: "wf", barWidth: 26,
+        data: delta.map((d, i) => ({ value: d, itemStyle: { color: colors[i], borderRadius: 3 } })),
+        label: { show: true, position: "top", color: "#dbe6f5", fontSize: 10, fontWeight: 600,
+          formatter: p => signedB(raw[p.dataIndex]) } },
+    ],
+  };
+  state.chartBridge.setOption(opt, true);
 }
 
 /* ============ 选股 ============ */
@@ -656,7 +778,7 @@ async function loadWatch() {
 }
 
 window.addEventListener("resize", () => {
-  [state.chartNav, state.chartMkt, state.chartSym, state.chartPnl].forEach(c => c && c.resize());
+  [state.chartNav, state.chartMkt, state.chartSym, state.chartPnl, state.chartBridge].forEach(c => c && c.resize());
 });
 
 /* ============ 持仓增 / 改 / 删 ============ */
@@ -942,6 +1064,7 @@ function renderMetrics(m) {
   if ($("#mxBridgeNote")) {
     $("#mxBridgeNote").innerHTML = (br.coverage || []).map(c => `<span>${c}</span>`).join("");
   }
+  renderWaterfall(br);
   const buckets = [
     ["外部存入", st.deposit?.usd, "银行转存 5 笔", "in"],
     ["外部取出", st.withdraw?.usd, "银行转取 2 笔", "out"],

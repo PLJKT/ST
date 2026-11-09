@@ -1482,6 +1482,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (["portfolio", "discover", "analysis", "risk"].includes(h)) goView(h);
 });
 
+/* 同一页面内改哈希（如 ?v=x#analysis）也要切视图 */
+window.addEventListener("hashchange", () => {
+  const h = (location.hash || "").replace("#", "");
+  if (["portfolio", "discover", "analysis", "risk"].includes(h) && state.view !== h) goView(h);
+});
+
 /* ============ 风控页：盘面 / 逐仓 / 对冲 ============ */
 let riskLoaded = false;
 let riskBusy = false;

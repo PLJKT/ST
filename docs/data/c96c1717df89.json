@@ -1,1 +1,1 @@
-{"symbol":"PHILLIPMMF.SG","bars":[],"error":"no_data","hint":"yfinance 对 PHILLIPMMF.SG / period=1y 未返回数据"}
+{"symbol":"PHILLIPMMF.SG","error":"YFRateLimitError('Too Many Requests. Rate limited. Try after a while.')","bars":[]}

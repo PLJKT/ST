@@ -1,0 +1,8 @@
+# 二进制文件：禁止 Git 做换行/文本转换，保证字节与清单 sha256 一致
+*.pdf binary
+*.db binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.xlsx binary
+*.zip binary

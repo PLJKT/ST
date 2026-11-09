@@ -1,0 +1,13 @@
+# 公开镜像：只跟踪代码与脱敏站点
+server.out.log
+server.err.log
+*.pyc
+__pycache__/
+.env
+data/st.db
+data/st.db-wal
+data/st.db-shm
+data/source/
+data/raw/
+data/processed/
+data/snapshot/

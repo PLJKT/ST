@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ST v5 · 一个账本，两个门面</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b5cff'/%3E%3Ctext x='16' y='22' font-size='16' font-family='Arial' font-weight='700' fill='white' text-anchor='middle'%3EST%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css?v=76">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">ST</div>
+    <div class="brand-text">
+      <h1>ST v5</h1>
+      <p>一个账本，两个门面</p>
+    </div>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button data-view="portfolio" class="active">组合</button>
+    <button data-view="discover">选股</button>
+    <button data-view="analysis">分析</button>
+    <button data-view="risk">风控</button>
+  </nav>
+
+  <div class="tools">
+    <label class="sel"><span>账户</span>
+      <select id="accountSel">
+        <option value="all">全部账户</option>
+      </select>
+    </label>
+    <label class="sel"><span>折算</span>
+      <select id="baseSel">
+        <option value="USD">USD</option>
+        <option value="SGD">SGD</option>
+        <option value="IDR">IDR</option>
+      </select>
+    </label>
+    <button id="refreshBtn" class="ghost">刷新行情</button>
+    <span class="status" id="status">载入中…</span>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main>
+  <!-- ============ 组合 ============ -->
+  <section id="view-portfolio" class="view active">
+    <div class="cards" id="acctCards"></div>
+
+    <div class="kpis" id="kpis"></div>
+    <div class="ledger-strip" id="reconStrip"></div>
+    <div class="ledger-strip" id="ledgerStrip"></div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>持仓</h2>
+        <div class="panel-tools">
+          <span class="hint" id="posHint"></span>
+          <button id="addPosBtn" class="primary btn-mini">＋ 新增持仓</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="grid" id="posTable">
+          <thead>
+            <tr>
+              <th>账户</th><th>代码</th><th>名称</th><th>市场</th><th>方向</th>
+              <th class="num sortable" data-key="qty">数量</th>
+              <th class="num sortable" data-key="avg_cost">成本</th>
+              <th class="num sortable" data-key="price">现价</th>
+              <th class="num sortable" data-key="value_usd">市值</th>
+              <th class="num sortable" data-key="pnl_usd">浮盈</th>
+              <th class="num sortable" data-key="weight">权重(占敞口)</th>
+              <th>风险标注</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>历史台账</h2>
+        <span class="hint" id="legacyHint"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="grid compact" id="legacyTable">
+          <thead>
+            <tr><th>账户</th><th>序号</th><th>市场</th><th class="num">数量</th>
+            <th class="num">成本</th><th class="num">台账价</th><th class="num">市值</th>
+            <th class="num">浮盈</th><th>标记</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <div class="panel-head"><h2>净值曲线</h2><span class="hint">POEMS 月度台账 + FUTU 期末单点</span></div>
+        <div id="navChart" class="chart"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>市场分布</h2><span class="hint">按合并市值</span></div>
+        <div id="mktChart" class="chart"></div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <div class="panel-head"><h2>对账中心</h2><span class="hint">ST 的三方对账，常驻面板</span></div>
+        <div class="table-wrap">
+          <table class="grid compact" id="reconTable">
+            <thead><tr><th>检验</th><th>范围</th><th>结果</th><th>数值</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>标的盈亏（FUTU）</h2><span class="hint">FIFO 口径</span></div>
+        <div class="table-wrap">
+          <table class="grid compact" id="symTable">
+            <thead><tr><th>代码</th><th>名称</th><th class="num">笔数</th><th class="num">已实现</th><th class="num">开多</th><th class="num">开空</th><th class="num">胜率</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 选股 ============ -->
+  <section id="view-discover" class="view">
+    <div class="panel">
+      <div class="panel-head"><h2>搜索</h2><span class="hint">美股 / 港股 / 印尼股优先，A 股标参考</span></div>
+      <div class="search-row">
+        <input id="q" type="text" placeholder="代码或名称，例如 AAPL / 腾讯 / BBCA" autocomplete="off">
+        <button id="searchBtn">搜索</button>
+      </div>
+      <div id="searchResults" class="results"></div>
+    </div>
+
+    <div class="panel" id="symbolPanel" style="display:none">
+      <div class="panel-head"><h2 id="symTitle">单票详情</h2><span class="hint" id="symAsOf"></span></div>
+      <div class="kpis small" id="symKpis"></div>
+      <div class="grid2">
+        <div id="symChart" class="chart"></div>
+        <div class="side">
+          <div class="sim-box">
+            <h3>交易前模拟</h3>
+            <div class="sim-row">
+              <select id="simAccount"></select>
+              <input id="simQty" type="number" min="1" step="1" value="100">
+              <button id="simBtn" class="primary">模拟</button>
+            </div>
+            <div id="simOut" class="sim-out"></div>
+          </div>
+          <button id="watchBtn" class="ghost wide">加入观察池</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>筛选器</h2>
+        <span class="hint" id="coverageHint"></span>
+      </div>
+      <form id="screenForm" class="screen-form">
+        <fieldset>
+          <legend>市场</legend>
+          <label><input type="checkbox" name="market" value="US" checked> 美股</label>
+          <label><input type="checkbox" name="market" value="HK" checked> 港股</label>
+          <label><input type="checkbox" name="market" value="ID" checked> 印尼股</label>
+          <label class="muted"><input type="checkbox" name="market" value="CN"> A股（参考）</label>
+        </fieldset>
+        <fieldset>
+          <legend>条件</legend>
+          <label>PE ≤ <input name="pe_max" type="number" step="0.1" placeholder="15"></label>
+          <label>PB ≤ <input name="pb_max" type="number" step="0.1" placeholder="1.5"></label>
+          <label>股息率 ≥ <input name="div_min" type="number" step="0.1" placeholder="3">%</label>
+          <label>ROE ≥ <input name="roe_min" type="number" step="0.1" placeholder="12">%</label>
+          <label>市值 ≥ <input name="mcap_min" type="number" step="1" placeholder="10">B</label>
+          <label>价格 ≤ <input name="price_max" type="number" step="0.01" placeholder=""></label>
+        </fieldset>
+        <div class="form-actions">
+          <label class="check"><input id="allowMissing" type="checkbox"> 保留缺失字段（默认排除）</label>
+          <button type="submit" class="primary">运行筛选</button>
+          <button type="button" id="warmBtn" class="ghost">预热数据</button>
+          <button type="button" id="exportBtn" class="ghost">导出 CSV</button>
+          <span id="warmStatus" class="hint"></span>
+        </div>
+      </form>
+      <div id="screenOut" class="results"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>观察池</h2><span class="hint">只记录想法，不触发下单</span></div>
+      <div id="watchList" class="results"></div>
+    </div>
+  </section>
+
+  <!-- ============ 分析 ============ -->
+  <section id="view-analysis" class="view">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>交易关键指标</h2>
+        <div class="panel-tools">
+          <span class="hint" id="mxHint">载入中…</span>
+          <button id="mxBtn" class="ghost btn-mini">重算并核对</button>
+        </div>
+      </div>
+      <div class="kpis" id="mxHero"></div>
+      <div class="mx-accs" id="mxAccounts"></div>
+      <div class="mx-block">
+        <div class="mx-block-head">
+          <h3>券商流水核对</h3>
+          <span class="chip info" id="mxStTag">富途 · 资金明细</span>
+        </div>
+        <div class="table-wrap">
+          <table class="grid compact mx-recon" id="mxRecon">
+            <thead><tr><th>项目</th><th>券商口径</th><th>系统台账</th><th class="num">差额</th><th>说明</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="mx-block">
+        <div class="mx-block-head"><h3>资金去向</h3><span class="hint">USD 折算，出金/费用为负</span></div>
+        <div class="mx-buckets" id="mxBuckets"></div>
+      </div>
+      <div class="mx-block">
+        <div class="mx-block-head">
+          <h3>流水明细</h3>
+          <div class="panel-tools">
+            <span class="hint" id="mxFlowHint">倒序</span>
+            <button id="mxFlowMore" class="ghost btn-mini">再看 50 条</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="grid compact" id="mxFlows">
+            <thead><tr><th>时间</th><th>类型 · 代码</th><th class="num">金额</th><th class="num">余额</th><th>币种</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="note-line">口径：期间/笔数/已实现来自台账（ST 定稿，2026-09-24 快照）；出入金、成交笔数、现金余额来自富途资金明细（2024-08-03 → 2026-11-06）。<b>富途没有平仓台账，已实现用的是 232 条平仓事件的 FIFO 口径</b>；券商现金口径的 −21,188 含费用、利息、股息与仍持仓浮盈变动，两者不可互相替代。</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>POEMS 印尼账户台账</h2>
+        <div class="panel-tools">
+          <span class="chip info" id="pmTag">POEMS ID · IDR</span>
+          <button id="pmBtn" class="ghost btn-mini">重导单据</button>
+        </div>
+      </div>
+      <div class="kpis pm-kpis" id="pmHero"></div>
+      <div class="pm-grid">
+        <div class="pm-col">
+          <div class="mx-block-head"><h3>当前持仓</h3><span class="hint" id="pmPosHint">—</span></div>
+          <div class="table-wrap">
+            <table class="grid compact" id="pmPos">
+              <thead><tr><th>代码</th><th class="num">数量</th><th class="num">成本</th><th class="num">现价</th><th class="num">市值 IDR</th><th class="num">浮动</th><th>价源</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="pm-col">
+          <div class="mx-block-head"><h3>最近成交</h3><span class="hint">成交确认聚合</span></div>
+          <div class="table-wrap">
+            <table class="grid compact" id="pmTr">
+              <thead><tr><th>日期</th><th>方向</th><th>代码</th><th class="num">数量</th><th class="num">价格</th><th class="num">净额 IDR</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="mx-block">
+        <div class="mx-block-head"><h3>月度对账</h3><span class="hint">期末现金 · 持仓 · 成交笔数</span></div>
+        <div class="table-wrap">
+          <table class="grid compact" id="pmMonth">
+            <thead><tr><th>月份</th><th class="num">期末现金 IDR</th><th class="num">持仓只数</th><th class="num">本月成交</th><th class="num">存入</th><th class="num">取出</th><th class="num">分红</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="pm-checks" id="pmChecks"></div>
+      <p class="note-line">口径：成交以 38 份成交确认聚合的 <b>56 个单侧成交</b> 为准，已与 11 个月对账单的持仓链逐月对平；现金以对账单期末余额为准，10–11 月暂无对账单，用 9-30 现金 + 成交净额估算；货币基金按基金对账单的单位数与 NAV。<b>POEMS SG（新加坡）不在本档案夹内</b>，仍沿用 2022-01 台账，未与印尼账户合并。</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>POEMS 新加坡账户台账</h2>
+        <div class="panel-tools">
+          <span class="chip info" id="psTag">POEMS SG · USD 结算</span>
+          <button id="psBtn" class="ghost btn-mini">重导月结单</button>
+        </div>
+      </div>
+      <div class="kpis pm-kpis" id="psHero"></div>
+      <div class="pm-grid">
+        <div class="pm-col">
+          <div class="mx-block-head"><h3>当前持仓</h3><span class="hint" id="psPosHint">—</span></div>
+          <div class="table-wrap">
+            <table class="grid compact" id="psPos">
+              <thead><tr><th>代码</th><th class="num">数量</th><th class="num">成本</th><th class="num">现价</th><th class="num">市值 USD</th><th class="num">浮动</th><th>价源</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="pm-col">
+          <div class="mx-block-head"><h3>两期月结单对比</h3><span class="hint">期末口径</span></div>
+          <div class="table-wrap">
+            <table class="grid compact" id="psSnap">
+              <thead><tr><th>项目</th><th class="num">2025-11-28</th><th class="num">2026-10-31</th><th class="num">变化</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="mx-block">
+        <div class="mx-block-head"><h3>2025 年度股息（含 30% 美国预扣税）</h3><span class="hint" id="psDivHint">—</span></div>
+        <div class="table-wrap">
+          <table class="grid compact" id="psDiv">
+            <thead><tr><th>派息日</th><th>标的</th><th class="num">股数</th><th class="num">每份</th><th class="num">税前</th><th class="num">预扣税</th><th class="num">净入账</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="pm-checks" id="psChecks"></div>
+      <p class="note-line">口径：SG 账户（Margin Account）结算币 USD、以 SGD 折算列示。仅有 <b>2025-11 与 2026-10 两期月结单 + 1 份 2025 年度股息税单</b>，2025-12 → 2026-09 共 10 个月断档；SQQQ 12 → 165 股、基金 51.23 → 250.94 份的中间成交流水缺失，<b>不重建买入价与已实现盈亏</b>。2020–2022 旧台账仍留档，不计入当前权益。</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>数据体检</h2>
+        <div class="panel-tools">
+          <span class="hint" id="hygieneHint">载入中…</span>
+          <button id="hygToggle" class="ghost btn-mini">显示全部</button>
+          <button id="hygieneBtn" class="ghost btn-mini">重新体检并应用</button>
+        </div>
+      </div>
+      <div id="hygieneSummary" class="hyg-sum"></div>
+      <div class="table-wrap">
+        <table class="grid compact" id="hygieneTable">
+          <thead><tr><th>表</th><th>行 ID</th><th>判定</th><th>原因</th><th>账户</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="note-line">剔除 = 不进入任何合计、筛选与时间线；可疑 = 保留并单独说明。原始行不删除，可随时复核。</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>交易时间线</h2><span class="hint">按有日期的平仓记录重建（无日期行不计入）</span></div>
+      <div id="timelineCards" class="timeline"></div>
+      <div id="pnlChart" class="chart tall"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>交易偏好画像</h2><span class="hint">从 389 笔有日期的交易里归纳</span></div>
+      <div class="kpis small" id="profileCards"></div>
+      <ul class="notes" id="profileNotes"></ul>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>纪律检查</h2>
+        <div class="panel-tools">
+          <span class="hint" id="ruleHint">载入中…</span>
+          <button id="ruleBtn" class="ghost btn-mini">重新检查</button>
+        </div>
+      </div>
+      <div id="ruleList" class="rule-list"></div>
+      <p class="note-line">阈值取自公开交易纪律：单笔 ≤2% 权益、单票 ≤30%（50% 硬失效）、总敞口 ≤2.0x、现金 ≥0、空头 ≤10%、杠杆 ETF ≤10%、赔率 ≥1、期望值 &gt;0。新增持仓时同一套检查会在弹窗里实时报警。</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>下一步动作</h2><span class="hint">按当前组合与历史手法推算，可逐条执行</span></div>
+      <div id="actionList" class="action-list"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>风险清单</h2><span class="hint">历史行为 + 当前持仓</span></div>
+      <div id="riskList" class="risk-list"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>标的分布</h2><span class="hint">笔数与已实现盈亏</span></div>
+      <div class="table-wrap">
+        <table class="grid compact" id="profileTable">
+          <thead><tr><th>代码</th><th class="num">笔数</th><th class="num">已实现</th><th class="num">胜率</th><th>类型</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-risk" class="view">
+    <div class="panel">
+      <div class="panel-head"><h2>市场盘面</h2>
+        <div class="panel-tools"><span class="hint" id="riskAsOf">载入中…</span>
+          <button id="riskRefresh" class="ghost btn-mini">重新计算</button></div>
+      </div>
+      <div class="kpis small" id="riskKpis"></div>
+      <div id="mktBoard" class="mkt-board"></div>
+      <ul class="notes" id="mktNotes"></ul>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>逐仓：盈亏比 / 概率 / 止盈止损</h2><span class="hint" id="lvlHint"></span></div>
+      <div class="table-wrap">
+        <table class="grid compact" id="lvlTable">
+          <thead><tr>
+            <th>标的</th><th>方向</th><th class="num">数量</th>
+            <th class="num">现价</th><th class="num">ATR%</th><th class="num">止损</th><th class="num">止盈</th>
+            <th class="num">盈亏比</th><th class="num">概率 / 胜率</th>
+            <th class="num">期望</th><th>提示</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="note-line">止损 = 2×ATR(14) 与 20 日低点取更外侧，上限 3×ATR；止盈 = 3×ATR 与 20 日高，上限 5×ATR。
+        首达概率 = 无漂移随机游走先碰到止盈的概率（不利距离 / 总距离），不是预测；期望按历史胜率算。</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>对冲与回本</h2><span class="hint" id="hedgeHint">净 beta 敞口 · 情景 · 回本价</span></div>
+      <div id="hedgeWarn" class="warn-strip hidden"></div>
+      <div class="kpis small" id="hedgeCards"></div>
+      <div class="table-wrap">
+        <table class="grid compact" id="hedgeTable">
+          <thead><tr><th>市场</th><th>基准</th><th class="num">净 beta 敞口</th>
+            <th>对冲标的</th><th class="num">方向 / 股数</th><th class="num">名义 USD</th><th>可行性</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table class="grid compact" id="scenTable">
+          <thead><tr><th>基准情景</th><th class="num">未对冲盈亏</th><th class="num">占权益</th>
+            <th class="num">对冲后盈亏（理论）</th><th class="num">差额</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="table-wrap">
+        <table class="grid compact" id="beTable">
+          <thead><tr><th>浮亏标的</th><th>方向</th><th class="num">现价</th>
+            <th class="num">回本价</th><th class="num">还需变动</th><th class="num">浮亏</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="note-line" id="beNote"></p>
+    </div>
+  </section>
+</main>
+
+<!-- 持仓编辑弹窗 -->
+<div id="posModal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="posModalTitle">新增持仓</h2>
+      <button id="posModalClose" class="btn-mini ghost">关闭</button>
+    </div>
+    <div class="modal-body">
+      <label>账户 <select id="fAccount"></select></label>
+      <label>代码 <input id="fSymbol" placeholder="例如 AAPL / 0700 / BBCA" autocomplete="off"></label>
+      <label>名称 <input id="fName" placeholder="可留空" autocomplete="off"></label>
+      <label>方向 <select id="fSide"><option value="LONG">多头</option><option value="SHORT">空头</option></select></label>
+      <label>数量 <input id="fQty" type="number" step="any" min="0" placeholder="股数"></label>
+      <label>成本价 <input id="fCost" type="number" step="any" min="0" placeholder="含费用成本"></label>
+      <label>开仓日 <input id="fOpen" type="date"></label>
+      <label class="wide">备注 <input id="fNote" placeholder="为什么建这个仓 / 止损条件"></label>
+      <div class="modal-check" id="fCheck"></div>
+      <div class="modal-tip" id="fTip"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="hint" id="fErr"></span>
+      <button id="posModalCancel" class="ghost">取消</button>
+      <button id="posModalSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 定价弹窗：人工改价（优先级最高，覆盖实时价与收盘价） -->
+<div id="priceModal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="pSymbol">手动定价</h2>
+      <button id="pClose" class="btn-mini ghost">关闭</button>
+    </div>
+    <div class="modal-body">
+      <label>现价 <input id="pPrice" type="number" step="any" min="0" placeholder="例如 9.71"></label>
+      <label class="wide">原因 <input id="pNote" placeholder="券商报价延迟 / 停牌 / 修正错价" autocomplete="off"></label>
+      <div class="modal-tip" id="pTip"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="hint" id="pErr"></span>
+      <button id="pClear" class="ghost">清除手动价</button>
+      <button id="pCancel" class="ghost">取消</button>
+      <button id="pSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span>数据：ST v4 台账（解自 vault）+ Yahoo Finance 行情（取价优先级：人工定价 &gt; 实时报价 &gt; 最近收盘价 &gt; 台账价）</span>
+  <span id="footMeta"></span>
+</footer>
+
+<script src="echarts.min.js?v=56"></script>
+<script src="app.js?v=81"></script>
+</body>
+</html>

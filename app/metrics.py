@@ -1,0 +1,328 @@
+# -*- coding: utf-8 -*-
+"""交易关键指标：期间 / 笔数 / 盈亏 / 出入金 / 持仓时长 / 回报率，以及券商流水对账。
+
+两套口径并存是这份数据的现实：
+- 台账口径（ST 定稿，2026-09-24 快照）：已实现盈亏、平仓事件、持仓。
+- 券商口径（富途「资金明细」CSV）：现金、出入金、成交笔数、现金盈亏。
+对不上的地方在这里显性列出，不让某个数字假装覆盖另一个。
+"""
+from collections import defaultdict
+from datetime import datetime
+
+from . import db, market, poems, poems_sg, portfolio, statement
+
+ACCOUNTS = [
+    ("futu_main", "富途牛牛（主）"),
+    ("poems_sg", "POEMS SG（次）"),
+    ("poems_id", "POEMS ID（本地）"),
+]
+
+
+def _rates() -> dict:
+    try:
+        return market.fx_rates()
+    except Exception:
+        return {"USD": 1.0, "HKD": 0.1282, "SGD": 0.74, "IDR": 0.000064}
+
+
+def _usd(v, ccy, rates):
+    if v is None:
+        return None
+    return float(v) * float(rates.get(ccy or "USD", 1.0))
+
+
+def _d(s):
+    s = (s or "")[:10]
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _poems_stats(account_id: str, rates: dict, acc: dict) -> dict:
+    rows = db.query("SELECT * FROM closed_trades WHERE account_id=? "
+                    "AND COALESCE(quality,'ok')<>'reject'", [account_id])
+    dates = [d for d in (_d(r["open_date"]) for r in rows) if d]
+    dates += [d for d in (_d(r["close_date"]) for r in rows) if d]
+    holds = [r["holding_days"] for r in rows if (r["holding_days"] or 0) > 0]
+    wins = sum(1 for r in rows if (r["pnl"] or 0) > 0)
+    rets = []
+    for r in rows:
+        if r["pl_pct"] is None or not r["holding_days"]:
+            continue
+        rets.append(float(r["pl_pct"]) / max(r["holding_days"] / 30.0, 0.5))
+    avg_month = sum(rets) / len(rets) if rets else None
+    return {
+        "closed_trades": len(rows),
+        "trade_events": 0,
+        "realized_usd": acc.get("realized_usd"),
+        "realized_detail_usd": acc.get("realized_detail_usd"),
+        "win_rate": round(wins / len(rows), 4) if rows else None,
+        "avg_hold_days": round(sum(holds) / len(holds), 1) if holds else None,
+        "avg_month_return": avg_month,
+        "annual_return": (1 + avg_month) ** 12 - 1 if avg_month is not None else None,
+        "start": min(dates).strftime("%Y-%m-%d") if dates else None,
+        "end": max(dates).strftime("%Y-%m-%d") if dates else None,
+        "days": (max(dates) - min(dates)).days if dates else 0,
+        "fees_usd": None,
+    }
+
+
+def _futu_stats(rates: dict, acc: dict, st: dict) -> dict:
+    ev = db.query("SELECT * FROM trade_events WHERE account_id='futu_main' "
+                  "AND COALESCE(quality,'ok')<>'reject'")
+    dates = [d for d in (_d(r["occurred_at"]) for r in ev) if d]
+    wins = sum(1 for r in ev if (r["pnl"] or 0) > 0)
+    # 资金加权年化：已实现 / 净外部入金 / 年数（这是唯一有出入金可算的账户）
+    capital_annual = None
+    if st.get("net_external") and st.get("period_start"):
+        yrs = max((datetime.fromisoformat((st["period_end"] or "")[:10])
+                   - datetime.fromisoformat((st["period_start"] or "")[:10])).days / 365.0, 0.1)
+        capital_annual = (acc.get("realized_usd") or 0) / float(st["net_external"]) / yrs
+    return {
+        "closed_trades": 0,
+        "trade_events": len(ev),
+        "realized_usd": acc.get("realized_usd"),
+        "win_rate": round(wins / len(ev), 4) if ev else None,
+        "avg_hold_days": None,  # 台账事件只记平仓日，没有开仓日
+        "avg_month_return": None,
+        "annual_return": None,
+        "capital_weighted_annual": capital_annual,
+        "start": min(dates).strftime("%Y-%m-%d") if dates else None,
+        "end": max(dates).strftime("%Y-%m-%d") if dates else None,
+        "days": (max(dates) - min(dates)).days if dates else 0,
+        "fees_usd": None,
+    }
+
+
+def _cash_recon(rates: dict, rows: list[dict] | None = None) -> dict:
+    st = statement.summary()
+    cash_rows = db.query("SELECT * FROM cash_balances WHERE account_id='futu_main'")
+    cash_sys_usd = round(sum((_usd(r["amount"], r["ccy"], rates) or 0) for r in cash_rows), 2)
+    cash_sys_asof = max((r["as_of"] or "") for r in cash_rows) if cash_rows else ""
+    cash_broker_usd = round(sum((_usd(v, c, rates) or 0) for c, v in (st.get("cash_end") or {}).items()), 2)
+
+    ev_count = db.query("SELECT COUNT(*) AS n FROM trade_events "
+                        "WHERE COALESCE(quality,'ok')<>'reject'")[0]["n"]
+
+    rows = rows or portfolio.position_rows(with_quotes=True)
+    symbols = [r["symbol"] for r in rows if r["symbol"]]
+    snap = db.get_meta("positions_snapshot") or "2026-09-24 18:04"
+    after = statement.trades_after("futu_main", snap, symbols)
+
+    mv = round(sum(r["value_usd"] or 0 for r in rows), 2)
+    equity_ledger = round(cash_sys_usd + mv, 2)
+    stale_flow = round(sum(after["by_symbol"].values()), 2)
+    adjust = -stale_flow
+    return {
+        "cash_sys_usd": cash_sys_usd, "cash_sys_asof": cash_sys_asof,
+        "cash_broker_usd": cash_broker_usd, "cash_broker_asof": (st.get("period_end") or "")[:16],
+        "cash_gap": round(cash_broker_usd - cash_sys_usd, 2),
+        "broker_trade_count": st.get("trade_count"), "ledger_event_count": ev_count,
+        "trade_gap": (st.get("trade_count") or 0) - ev_count,
+        "broker_net": st.get("net_result"),
+        "equity_ledger": equity_ledger, "market_value_usd": mv,
+        "stale_flow_usd": stale_flow, "adjust_usd": round(adjust, 2),
+        "equity_est": round(equity_ledger + adjust, 2),
+        "stale_detail": after["by_symbol"], "positions_snapshot": snap,
+        "cash_deposit_usd": st.get("deposit", {}).get("usd"),
+        "cash_withdraw_usd": abs(st.get("withdraw", {}).get("usd") or 0),
+        "migration_usd": st.get("migration", {}).get("usd"),
+    }
+
+
+def key_metrics(rows: list[dict] | None = None) -> dict:
+    rates = _rates()
+    accs = {a["id"]: a for a in portfolio.account_summaries()}
+    st = statement.summary()
+    recon = _cash_recon(rates, rows)
+
+    accounts = []
+    for aid, name in ACCOUNTS:
+        a = accs.get(aid, {})
+        if aid == "futu_main":
+            s = _futu_stats(rates, a, st)
+            extra = {
+                "deposit_usd": st["deposit"]["usd"],
+                "withdraw_usd": abs(st["withdraw"]["usd"]),
+                "net_external_usd": st["net_external"],
+                "migration_usd": st["migration"]["usd"],
+                "broker_cash_usd": recon["cash_broker_usd"],
+                "broker_trades": st["trade_count"],
+                "broker_net_usd": st["net_result"],
+                "flow_source": "券商资金明细",
+                "cash_usd": a.get("cash_usd"),
+                "positions_usd": a.get("positions_usd"),
+                "equity_usd": a.get("equity_usd"),
+            }
+            s["start"] = min(filter(None, [s.get("start"), (st["period_start"] or "")[:10]]) or [None])
+            s["end"] = max(filter(None, [s.get("end"), (st["period_end"] or "")[:10]]) or [None])
+            if s["start"] and s["end"]:
+                s["days"] = (datetime.fromisoformat(s["end"]) - datetime.fromisoformat(s["start"])).days
+        elif aid == "poems_sg":
+            # POEMS SG：2026-10 月结单仍有持仓（SQQQ + USD 货币基金），
+            # 但只有 2025-11 / 2026-10 两期单据，2025-12→2026-09 断档，成交史无法重建。
+            s = _poems_stats(aid, rates, a)
+            sg = poems_sg.summary() or {}
+            cur = sg.get("current") or {}
+            extra = {"deposit_usd": None, "withdraw_usd": None, "net_external_usd": None,
+                     "migration_usd": None, "flow_source": "无出入金流水（仅 2 期月结单）",
+                     "cash_usd": a.get("cash_usd"), "positions_usd": a.get("positions_usd"),
+                     "equity_usd": a.get("equity_usd"),
+                     "cash_native": (cur.get("cash") or {}).get("amount"),
+                     "cash_ccy": (cur.get("cash") or {}).get("ccy"),
+                     "mf_units": (cur.get("mmf") or {}).get("units"),
+                     "mf_value_usd": (cur.get("mmf") or {}).get("value_usd"),
+                     "doc_period": (sg.get("meta") or {}).get("period"),
+                     "doc_count": (sg.get("meta") or {}).get("docs")}
+            # 台账停在 2022-01，但 2026-10 月结单证明仍在持仓：期间按最后一张单据收口，
+            # 回报率仍只能用 2020–2022 台账口径（2026 期无成交单据），必须标明。
+            if s.get("end"):
+                s["end"] = "2026-10-31"
+                if s.get("start"):
+                    s["days"] = (datetime.fromisoformat(s["end"])
+                                 - datetime.fromisoformat(s["start"])).days
+            s["return_basis"] = "2020–2022 台账口径（2026 期无成交单据）"
+        else:
+            # POEMS ID：2026-03 起的真实对账单 + 成交确认
+            s = _poems_stats(aid, rates, a)
+            led = poems.payload() or {}
+            flows = led.get("flows") or {}
+            r = float(rates.get("IDR") or 0.0000625)
+            pr = (led.get("meta") or {}).get("period") or ""
+            if "→" in pr:
+                s["start"], s["end"] = [x.strip() for x in pr.split("→")]
+                s["days"] = (datetime.fromisoformat(s["end"]) - datetime.fromisoformat(s["start"])).days
+            s["trade_count"] = len(led.get("trades") or [])
+            # 单笔年化对 1–5 天的短线调仓会失真，改用资金口径：
+            # 已实现盈亏 / 月均账户净值 / 月数（净值 = 对账单持仓市值 + 期末现金）
+            navs = []
+            for m in led.get("monthly") or []:
+                hv = sum((h.get("value") or 0) for h in (m.get("holdings") or []))
+                if not m.get("holdings") and not (m.get("cash") or 0):
+                    continue
+                navs.append(hv + (m.get("cash") or 0))
+            realized_native = sum((c.get("pnl") or 0) for c in (led.get("closed_lots") or []))
+            months = max((s.get("days") or 0) / 30.4, 1.0)
+            peak_nav = max(navs) if navs else None
+            if peak_nav and peak_nav > 0:
+                s["avg_month_return"] = realized_native / peak_nav / months
+                s["annual_return"] = s["avg_month_return"] * 12
+                s["return_basis"] = "峰值资金口径（已实现/峰值净值）"
+                s["avg_nav_idr"] = round(peak_nav)
+                s["realized_native"] = round(realized_native)
+            extra = {
+                "deposit_usd": round((flows.get("deposit") or 0) * r, 2),
+                "withdraw_usd": round((flows.get("withdraw") or 0) * r, 2),
+                "net_external_usd": round((flows.get("net_external") or 0) * r, 2),
+                "migration_usd": None,
+                "flow_source": "POEMS 对账单（2026-03 → 2026-09）",
+                "cash_usd": a.get("cash_usd"), "positions_usd": a.get("positions_usd"),
+                "equity_usd": a.get("equity_usd"),
+                "cash_native": (led.get("cash") or {}).get("amount"),
+                "mf_units": (led.get("mf") or {}).get("units"),
+                "mf_value_usd": round(((led.get("mf") or {}).get("value") or 0) * r, 2),
+                "realized_native_idr": (led.get("closed_lots") and
+                                        round(sum(c["pnl"] or 0 for c in led["closed_lots"]), 0)),
+            }
+
+        tags = [{"k": "台账", "v": f"{s['closed_trades'] or s['trade_events']} 笔"}]
+        if aid == "futu_main":
+            tags.append({"k": "券商流水", "v": f"{st['trade_count']} 成交"})
+            tags.append({"k": "持仓快照", "v": recon["positions_snapshot"][:10]})
+            if s["avg_hold_days"] is None:
+                tags.append({"k": "缺持仓时长", "v": "事件无开仓日"})
+        if extra["deposit_usd"] is None:
+            tags.append({"k": "缺出入金", "v": "无流水"})
+        if aid == "poems_sg":
+            tags.append({"k": "单据", "v": f"{extra.get('doc_count') or 0} 份（2 期月结单）"})
+            tags.append({"k": "持仓快照", "v": "2026-10-31"})
+            tags.append({"k": "台账断档", "v": "2022-02→2026-09"})
+            if extra.get("mf_units"):
+                tags.append({"k": "货币基金", "v": f"{extra['mf_units']:,.0f} 份"})
+        if aid == "poems_id":
+            tags.append({"k": "成交确认", "v": f"{s.get('trade_count') or 0} 笔"})
+            tags.append({"k": "对账期末", "v": "2026-09-30"})
+            if extra.get("mf_units"):
+                tags.append({"k": "货币基金", "v": f"{extra['mf_units']:,.0f} 份"})
+        accounts.append({"id": aid, "name": name, **s, **extra, "tags": tags})
+
+    # 总体
+    starts = [a["start"] for a in accounts if a.get("start")]
+    ends = [a["end"] for a in accounts if a.get("end")]
+    start, end = min(starts), max(ends)
+    days = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days
+    total_realized = round(sum(a["realized_usd"] or 0 for a in accounts), 2)
+    total_closed = sum(a["closed_trades"] for a in accounts) + sum(a["trade_events"] for a in accounts)
+    holds = [(a["avg_hold_days"], a["closed_trades"]) for a in accounts
+             if a["avg_hold_days"] and a["closed_trades"]]
+    wavg_hold = round(sum(h * n for h, n in holds) / max(sum(n for _, n in holds), 1), 1) if holds else None
+    rets = []
+    for r in db.query("SELECT pl_pct, holding_days FROM closed_trades WHERE "
+                      "COALESCE(quality,'ok')<>'reject' AND holding_days>0 AND pl_pct IS NOT NULL "
+                      "AND COALESCE(source,'')<>'poems_id_docs'"):
+        rets.append(float(r["pl_pct"]) / max((r["holding_days"] or 0) / 30.0, 0.5))
+    avg_month = sum(rets) / len(rets) if rets else None
+    annual = (1 + avg_month) ** 12 - 1 if avg_month is not None else None
+
+    overall = {
+        "start": start, "end": end, "days": days, "years": round(days / 365.0, 2),
+        "closed_trades": total_closed,
+        "realized_usd": total_realized,
+        "avg_hold_days": wavg_hold,
+        "avg_month_return": avg_month,
+        "annual_return": annual,
+        "broker_trades": st.get("trade_count"),
+        "broker_net_usd": st.get("net_result"),
+        "net_external_usd": st.get("net_external"),
+    }
+
+    recon_rows = [
+        {"item": "现金余额", "broker": f"${recon['cash_broker_usd']:,.2f}",
+         "ledger": f"${recon['cash_sys_usd']:,.2f}",
+         "diff": f"{recon['cash_gap']:+,.2f}",
+         "level": "ok" if abs(recon["cash_gap"]) < 100 else "danger",
+         "note": f"券商 {st['period_end'][:16]} 的期末余额，已写入系统现金（原台账 -14,618.28，9-24 快照）。"},
+        {"item": "成交笔数", "broker": f"{recon['broker_trade_count']} 笔",
+         "ledger": f"{recon['ledger_event_count']} 笔",
+         "diff": f"{recon['trade_gap']:+d}",
+         "level": "warn",
+         "note": "券商流水覆盖 2024-08 起全部成交；台账只收了 ST 表里挑出来的平仓事件，缺口是历史遗漏。"},
+        {"item": "累计交易净额", "broker": f"${recon['broker_net']:,.2f}（现金口径）",
+         "ledger": f"${round(sum(a['realized_usd'] or 0 for a in accounts if a['id']=='futu_main'), 2):,.2f}（已实现）",
+         "diff": f"{(recon['broker_net'] - (accounts[0]['realized_usd'] or 0)):+,.2f}",
+         "level": "warn",
+         "note": "现金口径含费用、利息、股息与仍持仓的浮盈变动；台账只算已平仓 FIFO 已实现，两者天然不等。"},
+        {"item": "9-24 后成交未扣仓", "broker": f"${recon['stale_flow_usd']:+,.2f} 净卖出",
+         "ledger": "持仓仍为 9-24 快照",
+         "diff": f"{recon['adjust_usd']:+,.2f}",
+         "level": "danger" if abs(recon["adjust_usd"]) > 1000 else "ok",
+         "note": "SQQQ 10-09 起分批卖出、GLD 反复买卖，台账数量未同步；差额按成交金额估算，校正后权益见左。"},
+    ]
+
+    return {
+        "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "overall": overall,
+        "accounts": accounts,
+        "statement": {k: v for k, v in st.items()
+                      if k not in ("monthly", "yearly", "by_symbol")},
+        "statement_monthly": st.get("monthly", []),
+        "statement_yearly": st.get("yearly", []),
+        "statement_symbols": st.get("by_symbol", []),
+        "recon": recon,
+        "recon_rows": recon_rows,
+    }
+
+
+def brief_recon(rows: list[dict] | None = None) -> dict:
+    """给组合页用的小结：券商现金 vs 台账现金、持仓快照滞后造成的调整、校正后权益。"""
+    rates = _rates()
+    r = _cash_recon(rates, rows)
+    return {
+        "cash_broker_usd": r["cash_broker_usd"], "cash_broker_asof": r["cash_broker_asof"],
+        "cash_sys_usd": r["cash_sys_usd"], "cash_sys_asof": r["cash_sys_asof"],
+        "cash_gap": r["cash_gap"], "adjust_usd": r["adjust_usd"],
+        "stale": r["stale_detail"], "positions_snapshot": r["positions_snapshot"],
+        "equity_ledger": r["equity_ledger"], "equity_est": r["equity_est"],
+        "deposit_usd": r["cash_deposit_usd"], "withdraw_usd": r["cash_withdraw_usd"],
+    }

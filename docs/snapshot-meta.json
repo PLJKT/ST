@@ -1,0 +1,8 @@
+{
+  "generated_at": "2026-11-09T12:56:09+07:00",
+  "readonly": true,
+  "source": "ST v5 /api/* snapshot",
+  "base": "http://127.0.0.1:8300",
+  "files": 199,
+  "failed": []
+}

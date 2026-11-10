@@ -2,7 +2,7 @@
 """富途融资融券账户 6519 / 9461（2022-01 → 2024-08）历史成交与费用口径。
 
 数据集由 tools/import_futu_hist.py 解析四份券商导出后落到
-data/processed/futu_hist_6519_9461.json，这里只做「折算 + 段盈亏」这一层。
+data/processed/futu_hist_2022_2024.json，这里只做「折算 + 段盈亏」这一层。
 
 为什么单列一段：
   1599（保证金综合账户）在 2024-08-03 收到的「资产迁移」并不是外部入金，
@@ -35,7 +35,7 @@ def _rates() -> dict:
 
 
 def payload() -> dict:
-    p = config.PROCESSED_DIR / "futu_hist_6519_9461.json"
+    p = config.PROCESSED_DIR / "futu_hist_2022_2024.json"
     if not p.exists():
         return {}
     try:

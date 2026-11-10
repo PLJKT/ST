@@ -154,7 +154,7 @@ data/source/futu/
   └─ 资金明细-保证金综合账户(账户)-20261108-073230.csv        108,375 B / 1,115 行
        │
        ├ tools/import_futu_hist.py → data/processed/futu_hist_trades.csv（4,562 笔逐笔成交，审计用）
-       │                          → data/processed/futu_hist_账户_9461.json（段汇总 + 校验 + 证据）
+       │                          → data/processed/futu_hist_2022_2024.json（段汇总 + 校验 + 证据）
        ├ statement.import_file()  → cash_flows（账户，幂等 id = sha1 前 16 位）+ 用末笔余额改写现金
        └ metrics.key_metrics()    → 分段对账拆成「账户/账户 段」+「账户 段」两行
 ```

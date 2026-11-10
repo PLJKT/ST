@@ -361,7 +361,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     id_pnl = round((id_acc.get("equity_usd") or 0) - (id_acc.get("net_external_usd") or 0) + pgas_usd, 2)
     total = round(futu_life + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
     # 交叉校验只覆盖「1599 起」的时段：2022-01→2024-08 段的出入金流水不在手上，
-    # 它的盈亏由 data/processed/futu_hist_6519_9461.json 自带校验（段初为零、段末 = 结转持仓）
+    # 它的盈亏由 data/processed/futu_hist_2022_2024.json 自带校验（段初为零、段末 = 结转持仓）
     chk_base = round(futu_new + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
     memory = float(life.get("memory_usd") or -50000.0)
     old = life.get("old_dashboard") or {}
@@ -403,7 +403,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     ]
     coverage = [
         "口径：三个账户各自独立结算，从未互转资金或持仓。富途 2024-08-03 的「资产迁移」是同一富途号内部的子账户升级（融资融券户 6519/9461 → 保证金综合户 1599），不是从 POEMS 转入，也不是外部入金",
-        "已覆盖：富途 6519（美股）/ 9461（港股）2022-01-13→2024-08-02 全部 4,562 笔成交与 4,166 条订单费用（dataset：data/processed/futu_hist_6519_9461.json）",
+        "已覆盖：富途 6519（美股）/ 9461（港股）2022-01-13→2024-08-02 全部 4,562 笔成交与 4,166 条订单费用（dataset：data/processed/futu_hist_2022_2024.json）",
         "已覆盖：富途 1599 2024-08-03→2026-11-06 全部成交与资金流水（含迁移、换汇）",
         "已覆盖：POEMS ID 2026-03-04→2026-11-06 共 62 份单据、56 笔成交、29 个平仓批次",
         "已覆盖：POEMS SG 2025-11 与 2026-10 两期月结单 + 2025 年度股息税单；旧户 2020-02→2022-01 台账",

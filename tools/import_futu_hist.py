@@ -9,7 +9,7 @@
 
 输出：
   data/processed/futu_hist_trades.csv        归一化成交明细（逐笔，供审计）
-  data/processed/futu_hist_6519_9461.json    汇总（供 app/futu_hist.py 读取）
+  data/processed/futu_hist_2022_2024.json    汇总（供 app/futu_hist.py 读取）
 
 口径要点（写进 JSON 的 meta，前端/文档直接引用）：
   * 成交金额 = 成交数量 × 成交价格，全部行成立（脚本会自校验，不符即退出）。
@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "data" / "source" / "futu"
-OUT_JSON = ROOT / "data" / "processed" / "futu_hist_6519_9461.json"
+OUT_JSON = ROOT / "data" / "processed" / "futu_hist_2022_2024.json"
 OUT_CSV = ROOT / "data" / "processed" / "futu_hist_trades.csv"
 
 FILES = {

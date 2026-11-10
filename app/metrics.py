@@ -9,7 +9,7 @@
 from collections import defaultdict
 from datetime import datetime
 
-from . import db, market, poems, poems_sg, portfolio, statement
+from . import db, futu_hist, market, poems, poems_sg, portfolio, statement
 
 ACCOUNTS = [
     ("futu_main", "富途牛牛（主）"),
@@ -165,7 +165,8 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
                 "positions_usd": a.get("positions_usd"),
                 "equity_usd": a.get("equity_usd"),
             }
-            s["start"] = min(filter(None, [s.get("start"), (st["period_start"] or "")[:10]]) or [None])
+            s["start"] = min(filter(None, [s.get("start"), (st["period_start"] or "")[:10],
+                                           (futu_hist.summary().get("period_start"))]) or [None])
             s["end"] = max(filter(None, [s.get("end"), (st["period_end"] or "")[:10]]) or [None])
             if s["start"] and s["end"]:
                 s["days"] = (datetime.fromisoformat(s["end"]) - datetime.fromisoformat(s["start"])).days
@@ -239,6 +240,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         tags = [{"k": "台账", "v": f"{s['closed_trades'] or s['trade_events']} 笔"}]
         if aid == "futu_main":
             tags.append({"k": "券商流水", "v": f"{st['trade_count']} 成交"})
+            tags.append({"k": "历史段", "v": f"{(futu_hist.summary().get('us') or {}).get('rows', 0) + (futu_hist.summary().get('hk') or {}).get('rows', 0)} 笔（2022-01 起）"})
             tags.append({"k": "持仓快照", "v": recon["positions_snapshot"][:10]})
             if s["avg_hold_days"] is None:
                 tags.append({"k": "缺持仓时长", "v": "事件无开仓日"})
@@ -330,6 +332,14 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     kpi = stn.get("kpi_poems") or {}
     life = stn.get("life_recon") or {}
     futu_total = recon["total_pnl_est"]
+    # 6519 / 9461 的 2022-01→2024-08 段（成交+费用口径），与 1599 段分开列
+    fh = futu_hist.summary()
+    carried = float(fh.get("carried_usd") or 0.0)
+    futu_old = float(fh.get("segment_usd") or 0.0)
+    # 1599 段的起点不是「零」：迁移进来的 01519 8,000 股与 AVGO −10 股空头
+    # 是资产而非入金，必须计入投入，否则 1599 段盈亏被高估 carried
+    futu_new = round(futu_total - carried, 2)
+    futu_life = round(futu_old + futu_new, 2)
     futu_bank = float((st.get("deposit") or {}).get("usd") or 0) + float((st.get("withdraw") or {}).get("usd") or 0)
     mig_net = round(float(recon["net_external_usd"] or 0) - futu_bank, 2)
     sg_start = float(life.get("sg_legacy_start") or 23110.0)
@@ -349,13 +359,16 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     idr = float(life.get("idr_usd") or 18106.95)
     pgas_usd = round(float(life.get("id_pgas_idr") or 14900000.0) / idr, 2)
     id_pnl = round((id_acc.get("equity_usd") or 0) - (id_acc.get("net_external_usd") or 0) + pgas_usd, 2)
-    total = round(futu_total + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
+    total = round(futu_life + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
+    # 交叉校验只覆盖「1599 起」的时段：2022-01→2024-08 段的出入金流水不在手上，
+    # 它的盈亏由 data/processed/futu_hist_6519_9461.json 自带校验（段初为零、段末 = 结转持仓）
+    chk_base = round(futu_new + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
     memory = float(life.get("memory_usd") or -50000.0)
     old = life.get("old_dashboard") or {}
     futu_broker_val = round(recon["cash_broker_usd"] + recon["mv_broker"], 2)
     now_val = round(futu_broker_val + float(sg_acc.get("equity_usd") or 0)
                     + float(id_acc.get("equity_usd") or 0) + pgas_usd, 2)
-    in_total = round(float(recon["net_external_usd"] or 0) + sg_start + sg_new_invest
+    in_total = round(float(recon["net_external_usd"] or 0) + carried + sg_start + sg_new_invest
                      + float(id_acc.get("net_external_usd") or 0), 2)
     chk = round(now_val + sg_old_exit - in_total, 2)
     bridge = [
@@ -363,29 +376,39 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
          "n": f"台账初始入金 {sg_start:,.2f}，平仓后权益 {sg_end:,.2f}（146 笔美股 + 12 笔港股，胜率 78%）"},
         {"k": "POEMS SG 旧户 · 2022-01 未平仓浮亏", "v": sg_r2, "level": "ok",
          "n": "2022-01-27 还拿着 6 只（含 100 股亏损仓），台账按当日价计的账面浮亏；这部分在清仓时兑现"},
-        {"k": "富途 1599 · 2024-08→2026-11 券商口径", "v": futu_total, "level": "ok",
-         "n": f"期末现金 {recon['cash_broker_usd']:,.2f} + 持仓 {recon['mv_broker']:,.2f} − 净投入 {recon['net_external_usd']:,.2f}"
-                 f"（银行存入 {float((st.get('deposit') or {}).get('usd') or 0):,.2f} / 取出 {float((st.get('withdraw') or {}).get('usd') or 0):,.2f}"
-                 f" / 开户日资产迁移入账 {mig_net:,.2f}）"},
+        {"k": "富途 6519/9461 · 2022-01→2024-08 成交+费用口径", "v": futu_old, "level": fh.get("level") or "warn",
+         "n": (f"美股 {fh['us']['rows']} 笔成交额 {fh['us']['turnover']:,.2f} / 费用 {fh['us']['fees']:,.2f}；"
+               f"港股 {fh['hk']['rows']} 笔成交额 {fh['hk']['turnover']:,.2f} HKD / 费用 {fh['hk']['fees']:,.2f} HKD；"
+               f"迁移日结转的 01519 8,000 股与 AVGO −10 股按次日成交价计 {carried:,.2f}。"
+               f"AMAT 394 股（成本 {fh.get('amat', {}).get('cost_usd', 0):,.2f}）无平仓/迁移记录，未并入本段——若确认已灭失，本段为 {fh.get('amat_alt_usd', 0):,.2f}")},
+        {"k": "富途 1599 · 2024-08→2026-11 券商口径", "v": futu_new, "level": "ok",
+         "n": f"期末现金 {recon['cash_broker_usd']:,.2f} + 持仓 {recon['mv_broker']:,.2f} − 净投入 (银行存入 {float((st.get('deposit') or {}).get('usd') or 0):,.2f} / 取出 {float((st.get('withdraw') or {}).get('usd') or 0):,.2f} / 开户日内部迁移入账 {mig_net:,.2f} + 随迁持仓 {carried:,.2f})；"
+                 "迁移来自同号融资融券子账户 6519 / 9461，不是 POEMS"},
         {"k": "POEMS SG 新户 · 2025-11→2026-11", "v": sg_new_pnl, "level": "warn",
          "n": f"首见余额 {sg_new_start:,.2f} + 期间买入成本 {sg_cost:,.2f}（SQQQ 165 股 + 货基 250.9555 份）− 现值 {float(sg_acc.get('equity_usd') or 0):,.2f}；2025-12→2026-09 无月结单，投入按持仓成本反推"},
         {"k": "POEMS ID · 2026-03→2026-11 资金口径", "v": id_pnl, "level": "ok",
          "n": f"现值 {float(id_acc.get('equity_usd') or 0):,.2f} + PGAS 回款 {pgas_usd:,.2f} − 净投入 {float(id_acc.get('net_external_usd') or 0):,.2f}（IDR 折 USD，汇率 {idr:,.2f}）"},
         {"k": "全历史合计（逐段相加）", "v": total, "level": "ref",
-         "n": f"2020-02 → 2026-11-09，三个独立账户各自结算、账户之间无互转。交叉校验：累计投入 {in_total:,.2f} vs 已退出 {sg_old_exit:,.2f} + 现值 {now_val:,.2f}"
-                 f" = {chk:,.2f}（" + ("与逐段相加完全闭合" if abs(chk - total) < 5 else f"与逐段相加差 {round(chk - total, 2):+,.2f}") + "）"},
+         "n": f"2020-02 → 2026-11-09，三个独立账户各自结算、账户之间无互转。富途一段拆两行：融资户 {futu_old:,.2f} + 保证金户 {futu_new:,.2f} = {futu_life:,.2f}。"
+                 f"交叉校验（1599 起）：累计投入 {in_total:,.2f}（净外部投入 {float(recon['net_external_usd'] or 0):,.2f} + 随迁持仓 {carried:,.2f} + SG/ID 投入）"
+                 f"vs 已退出 {sg_old_exit:,.2f} + 现值 {now_val:,.2f} = {chk:,.2f}，与小计 {chk_base:,.2f} 差 {round(chk - chk_base, 2):+,.2f}；"
+                 f"2022-01→2024-08 段不含在本次交叉校验内（无出入金流水，段盈亏独立推导）"},
         {"k": "你说的记忆 · 约 −5 万", "v": memory, "level": "danger",
          "n": f"与全历史合计差 {round(memory - total, 2):+,.2f}。这个数来自旧仪表盘的「回本缺口 {float(old.get('gap') or 49293.65):,.2f}」："
                  "本金 66,062.97 = 富途 42,952.97（正好等于 9-24 时点的净投入 34,676.90 + 22,468.37 − 7,200 − 6,992.30）"
                  f"+ SG 旧户 {sg_start:,.0f}，但减去的权益 {float(old.get('current_then') or 16769.32):,.2f} 只是富途一户；"
-                 "SG 新户与 ID 的投入（约 1.89 万）和权益都没进这条式子 → 混合口径，不是终身亏损"},
+                 "SG 新户与 ID 的投入（约 1.89 万）和权益都没进这条式子 → 混合口径，不是终身亏损。"
+                 f"补齐 2022-2024 富途段后差额从 −35,632 收窄到 {round(memory - total, 2):+,.2f}；"
+                 f"唯一还能大幅移动这条数的是 AMAT 394 股（成本 {fh.get('amat', {}).get('cost_usd', 0):,.2f}）"},
     ]
     coverage = [
-        "口径：三个账户各自独立结算，从未互转资金或持仓。富途 2024-08-03 的「资产迁移」是开户当天入账（USD +27,902.71 / HKD −42,208.44 记为欠款，已于期间归还），不是从 POEMS 转入",
-        "已覆盖：富途 2024-08-03→2026-11-06 全部 555 笔成交与全部资金流水（含迁移、换汇）",
+        "口径：三个账户各自独立结算，从未互转资金或持仓。富途 2024-08-03 的「资产迁移」是同一富途号内部的子账户升级（融资融券户 6519/9461 → 保证金综合户 1599），不是从 POEMS 转入，也不是外部入金",
+        "已覆盖：富途 6519（美股）/ 9461（港股）2022-01-13→2024-08-02 全部 4,562 笔成交与 4,166 条订单费用（dataset：data/processed/futu_hist_6519_9461.json）",
+        "已覆盖：富途 1599 2024-08-03→2026-11-06 全部成交与资金流水（含迁移、换汇）",
         "已覆盖：POEMS ID 2026-03-04→2026-11-06 共 62 份单据、56 笔成交、29 个平仓批次",
         "已覆盖：POEMS SG 2025-11 与 2026-10 两期月结单 + 2025 年度股息税单；旧户 2020-02→2022-01 台账",
-        "未覆盖：POEMS SG 旧户 2022-01 关闭后、富途 2024-08 开户前的空档（该段没有在册账户，资金去向不在本账本内）",
+        "未闭合：富途 6519 的 AMAT 394 股自 2023-03-03 起无任何成交、1599 侧 0 次出现，成本 46,843.49 USD 单列不计；该段盈亏随此项在 -3,326 与 -50,170 之间摆动",
+        "口径缺口：6519/9461 的导出只有成交与费用，没有出入金流水，段内盈亏用「净现金流 − 费用 + 结转持仓计值」推导，未含融资利息与股息",
         "未覆盖：2019 及以前（无记录，若有其它券商账户不在此账本内）",
         "待补：POEMS ID 的 PGAS 卖出成交确认（约 1,490 万 IDR，已按 1,490 单价估算进合计）",
     ]

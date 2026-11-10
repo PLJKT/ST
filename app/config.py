@@ -35,12 +35,14 @@ ACCOUNTS = [
         "id": "futu_main", "broker": "FUTU", "entity": "Futu Securities",
         "name": "富途牛牛（主）", "base_ccy": "USD", "settle_ccy": "USD",
         "multi_ccy": 1, "markets": ["US", "HK"], "status": "active",
-        "opened_at": "2024-08-03", "closed_at": None,
+        "opened_at": "2022-01-13", "closed_at": None,
         "opening_cash": 0.0, "opening_ccy": "USD",
         "margin_enabled": 1, "margin_multiplier": None, "mmf_sweep": 1,
-        "feed": "成交 / 资金 / 订单 三份 CSV，2024-08 起逐月更新",
+        "feed": "成交/资金/订单 CSV：2022-01→2024-08 融资融券户 6519/9461，2024-08 起保证金综合户 1599",
         "feed_status": "live",
-        "note": "2024-08-03 由 POEMS 资产迁移设立；成交/资金/订单三份 CSV 为权威源。",
+        "note": ("同一富途号：2022-01-13 起在融资融券子账户 6519（美股）/ 9461（港股）交易，"
+                 "2024-08-03 内部迁移升级为保证金综合账户 1599（USD +27,902.71 / HKD −42,208.44，"
+                 "同日结转 01519 8,000 股与 AVGO −10 股）。不是从 POEMS 迁入，也不是外部入金。"),
     },
     {
         "id": "poems_sg", "broker": "POEMS", "entity": "Phillip Securities Pte Ltd (SG)",

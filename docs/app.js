@@ -515,12 +515,14 @@ function renderWaterfall(br) {
   comps.forEach(r => {
     const parts = String(r.k).split("·");
     let acct = parts[0].trim()
+      .replace("富途 6519/9461", "富途旧段").replace("富途 1599", "富途")
       .replace("POEMS SG 旧户", "SG旧户").replace("POEMS SG 新户", "SG新户")
-      .replace("POEMS ID", "ID").replace("富途 1599", "富途")
+      .replace("POEMS ID", "ID")
       .replace("全历史合计（逐段相加）", "合计").replace(/\s+/g, "");
     const tail = (parts[1] || "").replace(/\d{4}-\d{2}→\d{4}-\d{2}/, "").trim();
     const tag = tail.includes("已实现") ? "已实现" : tail.includes("浮亏") ? "浮亏"
-      : tail.includes("券商口径") ? "券商口径" : tail.includes("资金口径") ? "资金口径" : "";
+      : tail.includes("成交") ? "成交口径" : tail.includes("券商口径") ? "券商口径"
+      : tail.includes("资金口径") ? "资金口径" : "";
     labels.push(tag ? acct + "\n" + tag : acct);
     base.push(toBase(Math.min(cum, cum + r.v)));
     delta.push(Math.abs(toBase(r.v)));

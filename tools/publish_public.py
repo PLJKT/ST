@@ -18,6 +18,7 @@ r"""把私有开发库发布成公开镜像：只有代码 + 脱敏站点。
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -36,7 +37,22 @@ except ImportError:  # pragma: no cover
     _DOC_TOKENS, _DOC_WORD_TOKENS = [], []
 
 DEFAULT_DEST = ROOT.parent / "ST-public"
-GIT = r"C:\Program Files\Git\cmd\git.exe"
+
+
+def _find_git() -> str:
+    """git 的可执行文件位置因机器而异：先看常见安装路径，再退回 PATH。"""
+    cands = [os.environ.get("ST_GIT"),
+             os.path.join(os.environ.get("ProgramFiles", "C:/Program Files"), "Git", "cmd", "git.exe")]
+    prof = os.environ.get("USERPROFILE")
+    if prof:
+        cands.append(os.path.join(prof, "AppData", "Local", "hermes", "git", "cmd", "git.exe"))
+    for c in cands:
+        if c and Path(c).exists():
+            return c
+    return "git"
+
+
+GIT = _find_git()
 REMOTE = "https://github.com/PLJKT/ST.git"
 
 COPY_DIRS = ["app", "web", "tools", "docs"]

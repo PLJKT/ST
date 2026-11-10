@@ -82,9 +82,10 @@ def summary() -> dict:
         "segment_usd": seg_usd,
         "level": "warn",
         "amat": {"symbol": "AMAT", "qty": round(amat["pos"], 2) if amat else 0,
-                 "cost_usd": amat_cost,
+                 "cost_usd": amat_cost, "status": "transferred_out",
+                 "note": "证券转仓不产生现金流水，两份导出与 1599 流水都看不到——按用户确认，"
+                         "这批持仓已转出本账本（原值移出），不计亏损也不计资产",
                  "last_trade": amat["last"][:10] if amat else None},
-        "amat_alt_usd": round(seg_usd - amat_cost, 2),
         "evidence": d["meta"]["evidence"],
         "checks": d["meta"]["checks"],
         "fees_breakdown": {"us": us["fees"]["breakdown"], "hk": hk["fees"]["breakdown"]},

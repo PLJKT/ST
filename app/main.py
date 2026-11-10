@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -15,7 +16,30 @@ from pydantic import BaseModel
 from . import (config, db, discipline, edit, hygiene, insights, market, metrics,
                poems, poems_sg, portfolio, risk, screener, seed, statement)
 
-app = FastAPI(title=config.APP_NAME, description="一个账本，两个门面", version="5.0")
+def _fix_nonfinite(obj):
+    """把 NaN / ±Inf 变成 null。
+
+    行情接口偶尔返回 NaN（报价缺失、Yahoo crumb 401 兜底等）；FastAPI 的
+    JSONResponse 用 allow_nan=False，一个 NaN 就能把整条响应打成 500。
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _fix_nonfinite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_fix_nonfinite(v) for v in obj]
+    return obj
+
+
+class SafeJSON(JSONResponse):
+    """默认响应类：先清 NaN 再序列化，避免 500。"""
+
+    def render(self, content: Any) -> bytes:
+        return super().render(_fix_nonfinite(content))
+
+
+app = FastAPI(title=config.APP_NAME, description="一个账本，两个门面", version="5.0",
+              default_response_class=SafeJSON)
 _t0 = time.time()
 
 
@@ -31,7 +55,7 @@ def _startup():
 
 
 def _json_safe(obj):
-    return json.loads(json.dumps(obj, ensure_ascii=False, default=str))
+    return json.loads(json.dumps(_fix_nonfinite(obj), ensure_ascii=False, default=str))
 
 
 @app.get("/api/health")

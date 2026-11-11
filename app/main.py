@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import (config, db, discipline, edit, hygiene, insights, market, metrics,
-               poems, poems_sg, portfolio, risk, screener, seed, statement)
+               poems, poems_sg, portfolio, risk, screener, seed, statement, story)
 
 def _fix_nonfinite(obj):
     """把 NaN / ±Inf 变成 null。
@@ -344,6 +344,12 @@ def insights_all():
 @app.get("/api/metrics")
 def metrics_all():
     return _json_safe(metrics.key_metrics())
+
+
+# ============ 交易行为分阶段画像（时间线） ============
+@app.get("/api/story")
+def story_all():
+    return _json_safe(story.build())
 
 
 # ============ POEMS 印尼账户单据台账 ============

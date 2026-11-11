@@ -347,3 +347,31 @@ table.grid tbody td{vertical-align:top}
   .mix-row{grid-template-columns:92px minmax(0,1fr) 150px;gap:10px}
   .mix-nums b{font-size:12px}
 }
+/* ---- 交易历程 · 风格时间线 ---- */
+.story-line{margin-top:18px}
+.tl-item{display:grid;grid-template-columns:52px minmax(0,1fr);gap:14px}
+.tl-rail{position:relative;display:flex;justify-content:center}
+.tl-rail::before{content:"";position:absolute;top:0;bottom:0;width:1px;background:var(--line)}
+.tl-item:first-child .tl-rail::before{top:20px}
+.tl-item:last-child .tl-rail::before{bottom:calc(100% - 20px)}
+.tl-dot{position:relative;z-index:1;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
+  font-size:11px;font-weight:700;color:#0b0f17;background:var(--c);margin-top:6px;
+  font-variant-numeric:tabular-nums}
+.tl-card{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--c);
+  border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.tl-head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline}
+.tl-head b{font-size:15px;letter-spacing:.01em}
+.tl-span{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+.tl-behavior{margin:5px 0 10px;font-size:12px;color:var(--muted)}
+.tl-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:9px}
+.tl-metrics>div{background:#0d1420;border:1px solid var(--line);border-radius:9px;padding:7px 10px;min-width:0}
+.tl-metrics span{display:block;font-size:10px;color:var(--dim);letter-spacing:.05em}
+.tl-metrics b{display:block;font-size:15px;margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tl-metrics i{display:block;font-size:10px;color:var(--muted);font-style:normal;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-result{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:11px}
+@media (max-width:640px){
+  .tl-item{grid-template-columns:36px minmax(0,1fr);gap:10px}
+  .tl-dot{width:28px;height:28px;font-size:10px}
+  .tl-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

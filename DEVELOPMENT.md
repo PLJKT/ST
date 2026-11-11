@@ -261,6 +261,31 @@ data/source/futu/
 
 覆盖边界（界面 `coverage` 同步展示）：已覆盖富途 账户/账户 的 4,562 笔成交 + 4,166 条订单费用 + 账户 的 24 笔出入金、账户 的 555 笔成交与全部流水、POEMS ID 62 份单据、SG 两期月结单 + 旧户台账；未覆盖 2019 及以前；账户 仍无出入金（段盈亏为推导值，warn）；AMAT 394 股已按「转出」处理；待补 PGAS 卖出确认。
 
+### 4.5 交易行为分阶段画像（`app/story.py` → `GET /api/story` → 分析页时间线）
+
+把「交易时间 / 频率 / 交易量 / 结果」四个维度按阶段重排。**阶段边界取月度活跃度的自然断点，不按自然年硬切**：2022-04 美股开闸（单月 361 笔）、2022-05 峰值 484 笔、2022-08 掉到 14 笔/2 个标的（第一次收手）、2023-06 与 07 连续两月 3/8 笔（第二次长歇手）、2024-07 单月 327 笔（迁移前冲量）、2024-09 起 0–12 笔（休眠）、2025-04 单月 182 笔（唯一回场）、2026-02 起 POEMS ID 上线（小额分散）。断点定义写在 `story.PHASES` 里，改边界只改这张表。
+
+数据源（全部在库内，换机可复算，不依赖本地原始 CSV 以外的任何东西）：
+
+| 段 | 成交 | 费用 | 已实现 |
+|---|---|---|---|
+| 2022-01→2024-08 富途 账户/账户 | `data/processed/futu_hist_trades.csv` | `data/source/futu/历史订单费用-*.csv`（按「下单时间」落月，只计已成交订单） | 无逐笔平仓台账 → 整段口径，不给阶段值 |
+| 2024-08→2026-11 富途 账户 | `st.db` `cash_flows` 含「成交」的行 | `cash_flows` 的「买入费用 / 卖出费用」（不含融券费） | `trade_events` 232 条 |
+| 2026-02→2026-11 POEMS ID | `data/processed/poems.json` `trades` 56 | 成交单 `fee` | `closed_lots` 29 |
+| 2020-03→2022-01 POEMS SG 旧户 | 无逐笔成交 → 267 条平仓批次 | `closed_trades.fee` | 取分段对账口径 `+6,662.84`（`meta.st_numbers.life_recon`），与 `metrics` 同源 |
+
+口径：
+
+- 金额统一折 USD，汇率取 `market.fx_rates()`（与 `metrics` 同一套；取不到才用 HKD 0.1282 / SGD 0.74 / IDR 0.000064 兜底）。IDR、SGD 金额随当日汇率小幅浮动，**USD 段不受影响**。
+- `trades` = 券商成交行条数（同一订单可能分多笔成交），不是下单次数；SG 旧户单独用 `trades_kind="平仓批次"` 标注。
+- `avg_ticket_usd` = 成交额 / 成交笔数；SG 旧户按批次买入成本估算。
+- `fee_bp` = 交易费用 / 成交额 × 10000，只算佣金类（不含融资利息、融券费、股息税）。
+- `win_rate` / `hold_median` 只在有逐笔平仓来源的阶段给值（SG 旧户 / 账户 平仓事件 / ID 批次）；其余显式 `null`，前端显示「阶段盈亏不可细分」，**不用插值糊上去**。
+- SG 旧户 267 条批次里 24 条 `quality=reject`：盈亏仍按分段对账口径计，行为指标（胜率、持有、费用率）只用 243 条可算批次。
+
+**阶段盈亏 ≠ 全历史**：时间线里的已实现只统计能逐笔归因的三段（休眠 −7,918.81、回场 −5,682.35、印尼 −1,581.93，加 SG 旧户 +6,662.84），合计 −8,520；全历史 −27,262 还含 账户/账户 整段 −3,265、SG 新户 −4,882 与在手持仓浮亏 8,994.85。两个数不可互相替代，界面上分别标注「阶段」与「全历史」。
+
+
 
 
 
@@ -273,6 +298,7 @@ data/source/futu/
 | `portfolio.py` | `overview()` / `positions()` | 组合页 KPI、持仓表、市场分布 |
 | `metrics.py` | `metrics()` | 分析页「交易关键指标」+ 三张账户卡 |
 | `insights.py` | `timeline()` / `profile()` / `risks()` / `position_advice()` | 分析页时间线、画像、风险、下一步动作 |
+| `story.py` | `build()` | 分析页「交易历程 · 风格时间线」（8 阶段卡片 + 月度节奏图） |
 | `hygiene.py` | `summary()` / `apply()` | 分析页「数据体检」 |
 | `statement.py` | `summary()` / `rows()` / `import_file()` | 富途资金去向、流水明细 |
 | `poems.py` | `payload()` / `import_all()` | 分析页「POEMS 印尼账户台账」 |
@@ -295,7 +321,7 @@ data/source/futu/
 | 选股 | `/api/screen`、`/api/screen/warm`（POST）、`/api/screen/warm/status`、`/api/screen/export.csv`、`/api/watchlist*`、`/api/simulate` |
 | 治理 | `/api/hygiene`、`/api/hygiene/apply`（POST）、`/api/insights`、`/api/discipline`、`/api/risk` |
 | 单据 | `/api/statement`、`/api/statement/rows`、`/api/statement/import`（POST）、`/api/poems`、`/api/poems/import`（POST）、`/api/poems/sg`、`/api/poems/sg/import`（POST） |
-| 指标 | `/api/metrics` |
+| 指标 | `/api/metrics`、`/api/story` |
 | 定价 | `/api/prices/manual`（GET/POST/DELETE）、`/api/prices/refresh`（POST）、`/api/prices/closes` |
 | 编辑 | `/api/positions`（POST/PUT/DELETE）、`/api/cash`（POST）、`/api/positions/check`（POST） |
 

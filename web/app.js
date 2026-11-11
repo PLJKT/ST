@@ -1110,6 +1110,132 @@ async function loadFlows(reset) {
   } catch (e) { $("#mxFlowHint").textContent = "流水载入失败： " + e.message; }
 }
 
+/* ============ 交易历程 · 风格时间线 ============ */
+const STORY_COLORS = ["#4f8cff", "#2ee6a8", "#ffc857", "#a78bfa", "#ff8f5e", "#5ec8e8", "#ef9ac0", "#9bd35f"];
+function storyColor(key) {
+  const i = Math.max(0, parseInt(String(key || "p1").slice(1), 10) - 1);
+  return STORY_COLORS[i % STORY_COLORS.length];
+}
+
+function storyUnitHint(p) {
+  if (p.trades_kind === "平仓批次") return `${nf0.format(p.trades)} 平仓批次`;
+  const ac = (p.account_counts || []).filter(x => x.n).map(x => `${x.name} ${nf0.format(x.n)}`).join(" · ");
+  return ac || `${nf0.format(p.trades)} 笔`;
+}
+
+function storyResult(p) {
+  if (p.realized_usd != null) {
+    const cls = p.realized_usd >= 0 ? "ok" : "danger";
+    return `<span class="chip ${cls}" style="font-size:12px;padding:3px 9px">已实现 ${signed(p.realized_usd)}</span>` +
+      `<span class="muted">胜率 ${p.win_rate == null ? "—" : pct(p.win_rate, 1)} · 中位持有 ${p.hold_median == null ? "—" : p.hold_median + " 天"}</span>` +
+      (p.quality_note ? `<span class="muted">· ${p.quality_note}</span>` : "");
+  }
+  return `<span class="chip warn" style="font-size:12px;padding:3px 9px">阶段盈亏不可细分</span>` +
+    `<span class="muted">${p.realized_hint || p.realized_kind}</span>`;
+}
+
+function renderStory(s) {
+  if (!s || !s.phases || !$("#storyPhases")) return;
+  const sm = s.summary || {};
+  $("#storyHint").textContent = `${sm.start} → ${sm.end} · ${sm.months} 个月（活跃 ${sm.active_months}）· 金额 USD`;
+  const kpis = [
+    ["成交笔数", nf0.format(sm.trades || 0), `另有 SG 旧户 ${nf0.format(sm.sg_lots || 0)} 条平仓批次`],
+    ["峰值月份", sm.peak_month || "—", `单月 ${nf0.format(sm.peak_units || 0)} 笔（含批次）`],
+    ["平均单笔", money2(sm.avg_ticket_usd), `累计成交 ${money2(sm.turnover_usd)}`],
+    ["交易费用", money2(sm.fees_usd), `${num(sm.fee_bp, 1)} bp / 成交额`],
+    ["中位持有", sm.hold_median == null ? "—" : sm.hold_median + " 天", "只算有开平仓日期的批次"],
+    ["覆盖标的", nf0.format(sm.symbols || 0), "按代码去重（SG 旧户无代码）"],
+  ];
+  $("#storyKpis").innerHTML = kpis.map(([k, v, sub]) =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`).join("");
+
+  $("#storyPhases").innerHTML = s.phases.map((p, i) => {
+    const c = storyColor(p.key);
+    const tag = (p.accounts || []).map(a => chip(a, "info tag-mini")).join(" ");
+    const metrics = [
+      ["频率", `${num(p.trades_per_month, 0)} 笔/月`, storyUnitHint(p)],
+      ["单笔", p.avg_ticket_usd == null ? "—" : money2(p.avg_ticket_usd), `成交额 ${money2(p.turnover_usd)}`],
+      ["集中度", p.symbols == null ? "无代码" : `${nf0.format(p.symbols)} 个标的`,
+        p.top3_share == null ? "批次表无标的字段" : `前三占 ${pct(p.top3_share, 0)}`],
+      ["费用", `${num(p.fee_bp, 1)} bp`, `$${nf0.format(p.fees_usd)} · 活跃 ${nf0.format(p.active_days)} 天`],
+    ];
+    return `<div class="tl-item" style="--c:${c}">
+      <div class="tl-rail"><span class="tl-dot">${String(i + 1).padStart(2, "0")}</span></div>
+      <div class="tl-card">
+        <div class="tl-head">
+          <div><b>${p.title}</b> <span class="muted" style="font-size:11px">${tag}</span></div>
+          <div class="tl-span">${p.span_label} · ${p.months} 个月</div>
+        </div>
+        <p class="tl-behavior">${p.behavior}</p>
+        <div class="tl-metrics">${metrics.map(([k, v, sub]) =>
+          `<div><span>${k}</span><b>${v}</b><i>${sub}</i></div>`).join("")}</div>
+        <div class="tl-result">${storyResult(p)}</div>
+      </div>
+    </div>`;
+  }).join("");
+  $("#storyNotes").textContent = (s.notes || []).join(" ");
+
+  const el = $("#storyChart");
+  if (!el) return;
+  if (!state.chartStory) state.chartStory = echarts.init(el);
+  const xs = s.monthly.map(m => m.m);
+  const data = s.monthly.map(m => ({
+    value: m.units,
+    itemStyle: { color: storyColor(m.phase), borderRadius: [3, 3, 0, 0] },
+    m,
+  }));
+  const bands = s.phases.map(p => {
+    const idx = s.monthly.map((m, i) => (m.phase === p.key ? i : -1)).filter(i => i >= 0);
+    if (!idx.length) return null;
+    const first = idx[0], last = idx[idx.length - 1];
+    return [
+      { xAxis: xs[first], itemStyle: { color: storyColor(p.key) + "16" } },
+      { xAxis: xs[Math.min(last + 1, xs.length - 1)] },
+    ];
+  }).filter(Boolean);
+  state.chartStory.setOption({
+    grid: { left: 8, right: 12, top: 14, bottom: 8, containLabel: true },
+    tooltip: {
+      trigger: "axis", backgroundColor: "#0f1622", borderColor: "#1f2a3a", textStyle: { color: "#e6edf7" },
+      formatter: (ps) => {
+        const d = (ps[0] || {}).data || {};
+        const m = d.m || {};
+        const ph = s.phases.find(p => p.key === m.phase);
+        const per = m.units ? (m.turnover_usd / m.units) : 0;
+        return `<b>${m.m}</b> · ${ph ? ph.title : "空窗"}<br/>成交 ${nf0.format(m.units)} 笔`
+          + (m.lots ? `（批次 ${m.lots}）` : "")
+          + `<br/>成交额 ${money2(m.turnover_usd)} · 单笔 ${money2(per)}`
+          + (m.symbols ? ` · ${m.symbols} 个标的` : "");
+      },
+    },
+    xAxis: {
+      type: "category", data: xs, boundaryGap: true,
+      axisLine: { lineStyle: { color: "#1f2a3a" } },
+      axisLabel: { color: "#5f6f88", fontSize: 10, interval: 11, formatter: (v) => v.slice(0, 4) },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value", splitLine: { lineStyle: { color: "#182233" } },
+      axisLabel: { color: "#5f6f88", fontSize: 10 },
+    },
+    series: [{
+      type: "bar", data, barMaxWidth: 9,
+      markArea: { silent: true, data: bands, label: { show: false } },
+    }],
+  }, true);
+  state.chartStory.resize();
+}
+
+async function loadStory(force) {
+  if (!$("#storyPhases")) return;
+  try {
+    const s = await api("/api/story", force ? { cache: "no-store" } : {});
+    renderStory(s);
+  } catch (e) {
+    $("#storyHint").textContent = "时间线载入失败：" + e.message;
+  }
+}
+
 async function loadMetrics(force) {
   $("#mxHint").textContent = "重算中…";
   try {
@@ -1271,6 +1397,7 @@ async function loadInsights() {
     const [ins, hyg, disc] = await Promise.all([
       api("/api/insights"), api("/api/hygiene"), api("/api/discipline")]);
     loadMetrics();
+    loadStory();
     loadPoems();
     loadPoemsSg();
     renderHygiene(hyg);
@@ -1433,6 +1560,7 @@ function renderRisks(list) {
 
 $("#mxBtn").addEventListener("click", async () => {
   await loadMetrics(true);
+  await loadStory(true);
   await loadPortfolio(true);
   setStatus("指标已重算，现金已按券商流水核对");
 });

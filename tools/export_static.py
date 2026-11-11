@@ -49,6 +49,7 @@ PLAIN = [
     "discipline",
     "risk",
     "metrics",
+    "story",
     "poems",
     "poems/sg",
     "statement",

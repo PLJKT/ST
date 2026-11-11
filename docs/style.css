@@ -370,8 +370,17 @@ table.grid tbody td{vertical-align:top}
 .tl-metrics i{display:block;font-size:10px;color:var(--muted);font-style:normal;margin-top:2px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tl-result{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:11px}
+/* 时间线：小屏不横向溢出（KPI 与四格指标都降到两列） */
+.story-panel .panel-head{flex-wrap:wrap}
+.story-panel .panel-head .hint{flex:1 1 100%}
+@media (max-width:900px){
+  #storyKpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 @media (max-width:640px){
   .tl-item{grid-template-columns:36px minmax(0,1fr);gap:10px}
   .tl-dot{width:28px;height:28px;font-size:10px}
   .tl-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tl-metrics b{white-space:normal}
+  .tl-head b{font-size:14px}
+  .tl-card{padding:10px 11px}
 }

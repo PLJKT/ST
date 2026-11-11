@@ -338,7 +338,13 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     futu_old = float(fh.get("segment_usd") or 0.0)
     # 1599 段的起点不是「零」：迁移进来的 01519 8,000 股与 AVGO −10 股空头
     # 是资产而非入金，必须计入投入，否则 1599 段盈亏被高估 carried
-    futu_new = round(futu_total - carried, 2)
+    # 口径选择（2026-11-11 用户定）：全历史按「亏损更大」的券商资金口径统计。
+    #   券商资金口径 = 期末现金 − 净外部投入（不含在手持仓）
+    #   现值口径     = 期末现金 + 持仓 − 净外部投入 − 随迁证券
+    # 两者差 = 在手持仓 − 随迁证券；取更负的那个，现值口径只作脚注与交叉校验。
+    futu_new_eq = round(futu_total - carried, 2)
+    futu_new = round(futu_total - float(recon["mv_broker"] or 0), 2)
+    futu_new_gap = round(futu_new - futu_new_eq, 2)
     futu_life = round(futu_old + futu_new, 2)
     futu_bank = float((st.get("deposit") or {}).get("usd") or 0) + float((st.get("withdraw") or {}).get("usd") or 0)
     mig_net = round(float(recon["net_external_usd"] or 0) - futu_bank, 2)
@@ -360,9 +366,12 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     pgas_usd = round(float(life.get("id_pgas_idr") or 14900000.0) / idr, 2)
     id_pnl = round((id_acc.get("equity_usd") or 0) - (id_acc.get("net_external_usd") or 0) + pgas_usd, 2)
     total = round(futu_life + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
+    total_eq = round(futu_old + futu_new_eq + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
     # 交叉校验只覆盖「1599 起」的时段：2022-01→2024-08 段的出入金流水不在手上，
-    # 它的盈亏由 data/processed/futu_hist_2022_2024.json 自带校验（段初为零、段末 = 结转持仓）
-    chk_base = round(futu_new + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
+    # 它的盈亏由 data/processed/futu_hist_2022_2024.json 自带校验（段初为零、段末 = 结转持仓）。
+    # 注意这里必须用「现值口径」futu_new_eq：chk 里的 now_val 含在手持仓市值，
+    # 若拿券商资金口径当基线，0.00 的恒等式会凭空多出「持仓 − 随迁证券」这一项。
+    chk_base = round(futu_new_eq + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
     memory = float(life.get("memory_usd") or -50000.0)
     old = life.get("old_dashboard") or {}
     futu_broker_val = round(recon["cash_broker_usd"] + recon["mv_broker"], 2)
@@ -380,19 +389,26 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
          "n": (f"美股 {fh['us']['rows']} 笔成交额 {fh['us']['turnover']:,.2f} / 费用 {fh['us']['fees']:,.2f}；"
                f"港股 {fh['hk']['rows']} 笔成交额 {fh['hk']['turnover']:,.2f} HKD / 费用 {fh['hk']['fees']:,.2f} HKD；"
                f"迁移日结转的 01519 8,000 股与 AVGO −10 股按次日成交价计 {carried:,.2f}。"
-               f"AMAT 394 股（成本 {fh.get('amat', {}).get('cost_usd', 0):,.2f}）2023-03 之后无成交、1599 侧无承接，按「已转出本账本」处理（原值移出），不计亏损也不计资产")},
-        {"k": "富途 1599 · 2024-08→2026-11 券商口径", "v": futu_new, "level": "ok",
-         "n": f"期末现金 {recon['cash_broker_usd']:,.2f} + 持仓 {recon['mv_broker']:,.2f} − 净投入 (银行存入 {float((st.get('deposit') or {}).get('usd') or 0):,.2f} / 取出 {float((st.get('withdraw') or {}).get('usd') or 0):,.2f} / 开户日内部迁移入账 {mig_net:,.2f} + 随迁持仓 {carried:,.2f})；"
+               f"AMAT 394 股（成本 {fh.get('amat', {}).get('cost_usd', 0):,.2f}）2023-03 之后无成交、1599 侧无承接，按「已转出本账本」处理（原值移出），不计亏损也不计资产；"
+               f"6519 出入金 {((fh.get('cashflow_us') or {}).get('rows') or 0)} 笔"
+               f"（净入金 {(fh.get('cashflow_us') or {}).get('net_in') or 0:,.2f}，"
+               f"与成交表推定的期末现金 {(fh.get('cashflow_us') or {}).get('implied_cash_end') or 0:,.2f} 自洽）")},
+        {"k": "富途 1599 · 2024-08→2026-11 券商资金口径（不含在手持仓）", "v": futu_new, "level": "ok",
+         "n": f"期末现金 {recon['cash_broker_usd']:,.2f} − 净投入 {float(recon['net_external_usd'] or 0):,.2f}"
+                 f"（银行存入 {float((st.get('deposit') or {}).get('usd') or 0):,.2f} / 取出 {float((st.get('withdraw') or {}).get('usd') or 0):,.2f} /"
+                 f" 开户日内部迁移入账 {mig_net:,.2f} + 随迁持仓 {carried:,.2f}）；"
+                 f"在手持仓 {float(recon['mv_broker'] or 0):,.2f} 未计入本口径，现值口径为 {futu_new_eq:,.2f}（差 {futu_new_gap:+,.2f}）；"
                  "迁移来自同号融资融券子账户 6519 / 9461，不是 POEMS"},
         {"k": "POEMS SG 新户 · 2025-11→2026-11", "v": sg_new_pnl, "level": "warn",
          "n": f"首见余额 {sg_new_start:,.2f} + 期间买入成本 {sg_cost:,.2f}（SQQQ 165 股 + 货基 250.9555 份）− 现值 {float(sg_acc.get('equity_usd') or 0):,.2f}；2025-12→2026-09 无月结单，投入按持仓成本反推"},
         {"k": "POEMS ID · 2026-03→2026-11 资金口径", "v": id_pnl, "level": "ok",
          "n": f"现值 {float(id_acc.get('equity_usd') or 0):,.2f} + PGAS 回款 {pgas_usd:,.2f} − 净投入 {float(id_acc.get('net_external_usd') or 0):,.2f}（IDR 折 USD，汇率 {idr:,.2f}）"},
-        {"k": "全历史合计（逐段相加）", "v": total, "level": "ref",
-         "n": f"2020-02 → 2026-11-09，三个独立账户各自结算、账户之间无互转。富途一段拆两行：融资户 {futu_old:,.2f} + 保证金户 {futu_new:,.2f} = {futu_life:,.2f}。"
+        {"k": "全历史合计（逐段相加 · 亏损更大口径）", "v": total, "level": "ref",
+         "n": f"2020-02 → 2026-11-09，三个独立账户各自结算、账户之间无互转。富途一段拆两行：融资户 {futu_old:,.2f} + 保证金户 {futu_new:,.2f} = {futu_life:,.2f}（保证金户取券商资金口径，不含在手持仓）。"
+                 f"若改回现值口径（含在手持仓、扣随迁证券）合计为 {total_eq:,.2f}，差 {round(total - total_eq, 2):+,.2f}。"
                  f"交叉校验（1599 起）：累计投入 {in_total:,.2f}（净外部投入 {float(recon['net_external_usd'] or 0):,.2f} + 随迁持仓 {carried:,.2f} + SG/ID 投入）"
                  f"vs 已退出 {sg_old_exit:,.2f} + 现值 {now_val:,.2f} = {chk:,.2f}，与小计 {chk_base:,.2f} 差 {round(chk - chk_base, 2):+,.2f}；"
-                 f"2022-01→2024-08 段不含在本次交叉校验内（无出入金流水，段盈亏独立推导）"},
+                 f"2022-01→2024-08 段不含在本次交叉校验内（9461 仍无出入金、6519 只有美股侧 24 笔，段盈亏为推导值）"},
         {"k": "你说的记忆 · 约 −5 万", "v": memory, "level": "danger",
          "n": f"与全历史合计差 {round(memory - total, 2):+,.2f}。这个数来自旧仪表盘的「回本缺口 {float(old.get('gap') or 49293.65):,.2f}」："
                  "本金 66,062.97 = 富途 42,952.97（正好等于 9-24 时点的净投入 34,676.90 + 22,468.37 − 7,200 − 6,992.30）"
@@ -408,7 +424,9 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         "已覆盖：POEMS ID 2026-03-04→2026-11-06 共 62 份单据、56 笔成交、29 个平仓批次",
         "已覆盖：POEMS SG 2025-11 与 2026-10 两期月结单 + 2025 年度股息税单；旧户 2020-02→2022-01 台账",
         "已处理：富途 6519 的 AMAT 394 股（成本 46,843.49）自 2023-03-03 起无成交、1599 侧 0 次出现，且迁移只有现金没有证券转入 → 按「已转出本账本」处理，原值移出，不计亏损也不计入资产",
-        "口径缺口：6519/9461 的导出只有成交与费用，没有出入金流水，段内盈亏用「净现金流 − 费用 + 结转持仓计值」推导，未含融资利息与股息",
+        "已覆盖：6519（美股）2021-04-19→2024-06-04 全部 24 笔出入金（存入 +93,300.00 / 取出 −51,800.02 / 净入金 +41,499.98）；净入金 + 净现金流 − 费用 = 4,794.85 与成交表自洽",
+        "口径缺口：9461（港股）仍无出入金导出，6519/9461 合并段的盈亏用「净现金流 − 费用 + 结转持仓计值」推导，未含融资利息与股息",
+        "口径：全历史合计取「亏损更大」的券商资金口径 —— 1599 段按 期末现金 − 净外部投入 计，不含在手持仓 8,994.85；比现值口径多计 2,758.95 亏损",
         "未覆盖：2019 及以前（无记录，若有其它券商账户不在此账本内）",
         "待补：POEMS ID 的 PGAS 卖出成交确认（约 1,490 万 IDR，已按 1,490 单价估算进合计）",
     ]

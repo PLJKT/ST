@@ -17,6 +17,11 @@ data/processed/futu_hist_2022_2024.json，这里只做「折算 + 段盈亏」�
   + 迁移日结转出去的持仓按次日成交价计值（01519 +59,120 HKD / AVGO −1,300.30 USD）
   AMAT 394 股 2023-03-03 之后再无成交、1599 侧 0 次出现，成本 46,843.49
   单列为「未闭合项」，不并入本段——所以本段是 warn 级，不是 ok。
+
+出入金（2026-11-11 补）：
+  6519（美股）有完整资金明细 24 笔，净入金 +41,499.98；9461（港股）仍无同类导出，
+  所以合并段依然只能算「推导口径」，warn 的理由从「两份都没有出入金」收窄为「港股没有」。
+  交叉验证：净入金 + 美股净现金流 − 美股费用 = 4,794.85 推定期末现金，与成交表自洽。
 """
 import json
 
@@ -51,6 +56,7 @@ def summary() -> dict:
     rates = _rates()
     hkd = float(rates.get("HKD") or FX_FALLBACK["HKD"])
     us, hk, carried = d["us"], d["hk"], d["carried"]
+    cash = d.get("cash_us") or {}
 
     amat = next((x for x in us["residuals"] if x["symbol"] == "AMAT"), None)
     amat_cost = round(-(amat["net"]), 2) if amat else 0.0
@@ -78,9 +84,21 @@ def summary() -> dict:
                "pnl": round(hk_pnl * hkd, 2),
                "first": hk["first"][:10], "last": hk["last"][:10]},
         "carried_usd": carried_usd,
+        "cashflow_us": ({
+            "rows": cash.get("rows"), "first": (cash.get("first") or "")[:10],
+            "last": (cash.get("last") or "")[:10],
+            "deposit_rows": cash.get("deposit_rows"), "deposit_total": cash.get("deposit_total"),
+            "withdraw_rows": cash.get("withdraw_rows"), "withdraw_total": cash.get("withdraw_total"),
+            "net_in": cash.get("net_in"),
+            "implied_cash_end": cash.get("implied_cash_end"),
+            "by_year": cash.get("by_year"),
+        } if cash else None),
         "carried_note": d["meta"]["evidence"]["position_carry"],
         "segment_usd": seg_usd,
         "level": "warn",
+        "level_reason": ("9461（港股）没有出入金导出，合并段仍为推导口径；"
+                         "6519（美股）已有完整出入金，净入金 {:,.2f}".format(cash.get("net_in") or 0)
+                         if cash else "两份导出都没有出入金流水，合并段为推导口径"),
         "amat": {"symbol": "AMAT", "qty": round(amat["pos"], 2) if amat else 0,
                  "cost_usd": amat_cost, "status": "transferred_out",
                  "note": "证券转仓不产生现金流水，两份导出与 1599 流水都看不到——按用户确认，"

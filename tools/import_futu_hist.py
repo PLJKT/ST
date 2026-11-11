@@ -6,6 +6,7 @@
   历史订单费用-美股融资融券账户(6519)-20200101-20241231.csv
   历史成交-港股融资融券账户(9461)-20200101-20241231.csv
   历史订单费用-港股融资融券账户(9461)-20200101-20241231.csv
+  资金明细-美股融资融券账户(6519)-20261111-075440.csv   （2026-11-11 补；9461 侧仍无同类导出）
 
 输出：
   data/processed/futu_hist_trades.csv        归一化成交明细（逐笔，供审计）
@@ -15,7 +16,8 @@
   * 成交金额 = 成交数量 × 成交价格，全部行成立（脚本会自校验，不符即退出）。
   * 方向只有 买入 / 卖出 / 卖空；买入同时充当「建多」与「平空」，所以
     净持仓只能当参考，现金流才是可靠量。
-  * 这两份导出只有成交与费用，没有出入金流水；净现金流不等于盈亏。
+  * 9461（港股）只有成交与费用，没有出入金流水；6519（美股）补了资金明细后
+    才有出入金（24 笔 / 净入金 +41,499.98），但该文件只覆盖美股子账户。
 """
 import csv
 import hashlib
@@ -35,6 +37,7 @@ FILES = {
     "us_fees": "历史订单费用-美股融资融券账户(6519)-20200101-20241231.csv",
     "hk_trades": "历史成交-港股融资融券账户(9461)-20200101-20241231.csv",
     "hk_fees": "历史订单费用-港股融资融券账户(9461)-20200101-20241231.csv",
+    "cash_us": "资金明细-美股融资融券账户(6519)-20261111-075440.csv",
 }
 
 # 2024-08-03 资产迁移进 1599 的持仓（在 1599 侧能找到对应成交，见 meta.evidence）
@@ -66,6 +69,15 @@ def sha1(p):
     """
     text = p.read_text(encoding="utf-8-sig")
     return hashlib.sha1(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def text_bytes(p):
+    """字节数：原始字节数减去 CRLF 增量（= LF 归一化后的长度），含 BOM 的 3 字节。
+
+    不能用 read_text 的结果计算：它会做通用换行转换并去掉 BOM，算出来会偏小。
+    """
+    raw = p.read_bytes()
+    return len(raw) - raw.count(b"\r\n")
 
 
 def parse_trades(rows, ccy, market):
@@ -122,6 +134,50 @@ def agg_fees(rows):
             "breakdown": tot, "status": dict(status)}
 
 
+def agg_cashflows(rows):
+    """6519 出入金：银行转存 / 出金退款 记入，银行转取 记出。
+
+    只有 交易类型 / 代码 / 名称 / 金额 / 余额 / 币种 / 创建时间 七列，代码与名称全为 --。
+    """
+    dep, wit, series = [], [], []
+    for r in rows:
+        item = {"at": (r.get("创建时间") or "").strip().replace("/", "-"),
+                "type": (r.get("交易类型") or "").strip(),
+                "amount": round(num(r.get("金额")), 2),
+                "balance": round(num(r.get("余额")), 2)}
+        series.append(item)
+        (wit if item["type"] == "银行转取" else dep).append(item)
+    series.sort(key=lambda x: x["at"])
+    types = defaultdict(int)
+    for s in series:
+        types[s["type"]] += 1
+    years = defaultdict(lambda: {"n": 0, "in": 0.0, "out": 0.0})
+    for s in series:
+        y = years[s["at"][:4]]
+        y["n"] += 1
+        if s["amount"] > 0:
+            y["in"] += s["amount"]
+        else:
+            y["out"] += s["amount"]
+    dep_total = round(sum(s["amount"] for s in dep), 2)
+    wit_total = round(sum(s["amount"] for s in wit), 2)
+    return {
+        "rows": len(series), "ccy": "USD",
+        "first": series[0]["at"] if series else None,
+        "last": series[-1]["at"] if series else None,
+        "types": dict(types),
+        "deposit_rows": len(dep), "deposit_total": dep_total,
+        "withdraw_rows": len(wit), "withdraw_total": wit_total,
+        "net_in": round(dep_total + wit_total, 2),
+        "by_year": [{"y": k, **v, "net": round(v["in"] + v["out"], 2),
+                     "in": round(v["in"], 2), "out": round(v["out"], 2)}
+                    for k, v in sorted(years.items())],
+        "balance_last": series[-1]["balance"] if series else None,
+        "balance_last_at": series[-1]["at"] if series else None,
+        "series": series,
+    }
+
+
 def main():
     data = {}
     all_trades = []
@@ -131,7 +187,7 @@ def main():
         rows, p = load(name)
         data[key] = rows
         meta_files[key] = {"file": name, "rows": len(rows), "sha1": sha1(p),
-                           "bytes": p.stat().st_size}
+                           "bytes": text_bytes(p)}
 
     us_trades, bad_us = parse_trades(data["us_trades"], "USD", "US")
     hk_trades, bad_hk = parse_trades(data["hk_trades"], "HKD", "HK")
@@ -174,6 +230,9 @@ def main():
     hk = block(hk_trades, "HK", "HKD")
     us["fees"] = agg_fees(data["us_fees"])
     hk["fees"] = agg_fees(data["hk_fees"])
+    cash_us = agg_cashflows(data["cash_us"])
+    # 与成交表交叉验证：净入金 + 净现金流 − 费用 = 推定期末现金（不含结转持仓与空头）
+    cash_us["implied_cash_end"] = round(cash_us["net_in"] + us["net_cash"] - us["fees"]["total"], 2)
 
     payload = {
         "meta": {
@@ -184,7 +243,13 @@ def main():
                        "declared": "2020-01-01 → 2024-12-31（文件名标注）"},
             "checks": {
                 "amount_eq_qty_price": "4200 + 362 行全部成立（0 行不符）",
-                "no_cash_flows": "导出不含出入金流水，净现金流不等于盈亏",
+                "cash_flows": "6519（美股）有完整出入金：24 笔，存入 +93,300.00 / 取出 −51,800.02"
+                              " → 净入金 +41,499.98；9461（港股）仍无出入金导出",
+                "balance_unclear": "6519 资金明细的『余额』与『累计入金 + 已记录成交』差额剧烈跳动"
+                                   "（2022-03-28 +38,860 / 2022-05-09 +31,169 / 2024-06-04 +16,766）；"
+                                   "而导出首笔美股成交是 2022-04-12，2021-04→2022-04 余额已从 3,000 涨到 68,860"
+                                   "却无一条买单 → 要么该期间成交不在导出内（4,200 行像上限截断），"
+                                   "要么『余额』不是纯现金。未定案，不据此改任何数字",
                 "direction_note": "方向只有 买入/卖出/卖空；买入同时是建多与平空",
             },
             "evidence": {
@@ -198,6 +263,7 @@ def main():
             },
         },
         "carried": CARRIED,
+        "cash_us": cash_us,
         "us": us,
         "hk": hk,
     }
@@ -217,6 +283,9 @@ def main():
     print("HK  {:>5} 行  {} → {}  成交额 {:,.2f}  净现金流 {:,.2f}  费用 {:,.2f}".format(
         hk["rows"], hk["first"], hk["last"], hk["turnover"], hk["net_cash"], hk["fees"]["total"]))
     print("残留:", [(x["symbol"], x["pos"], x["net"]) for x in us["residuals"] + hk["residuals"]])
+    print("6519 出入金 {:>3} 行  {} → {}  存入 {:,.2f} / 取出 {:,.2f} / 净入金 {:,.2f}  推定期末现金 {:,.2f}".format(
+        cash_us["rows"], cash_us["first"], cash_us["last"], cash_us["deposit_total"],
+        cash_us["withdraw_total"], cash_us["net_in"], cash_us["implied_cash_end"]))
     print("→", OUT_JSON.relative_to(ROOT), OUT_CSV.relative_to(ROOT))
 
 

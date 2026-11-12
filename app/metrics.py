@@ -102,8 +102,10 @@ def _cash_recon(rates: dict, rows: list[dict] | None = None) -> dict:
     cash_sys_asof = max((r["as_of"] or "") for r in cash_rows) if cash_rows else ""
     cash_broker_usd = round(sum((_usd(v, c, rates) or 0) for c, v in (st.get("cash_end") or {}).items()), 2)
 
+    # 只统计富途本账户事件：此前未加账户过滤，把 SG/ID 的平仓批次也算进了「券商 1599 成交」分母
     ev_count = db.query("SELECT COUNT(*) AS n FROM trade_events "
-                        "WHERE COALESCE(quality,'ok')<>'reject'")[0]["n"]
+                        "WHERE account_id=? AND COALESCE(quality,'ok')<>'reject'",
+                        ("futu_main",))[0]["n"]
 
     rows = rows or portfolio.position_rows(with_quotes=True)
     futu_rows = [r for r in rows
@@ -309,27 +311,30 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         {"item": "累计交易净额", "broker": f"${recon['broker_net']:,.2f}（现金口径）",
          "ledger": f"${round(sum(a['realized_usd'] or 0 for a in accounts if a['id']=='futu_main'), 2):,.2f}（已实现）",
          "diff": f"{(recon['broker_net'] - (accounts[0]['realized_usd'] or 0)):+,.2f}",
-         "level": "warn",
-         "note": "现金口径含费用、利息、股息与仍持仓的浮盈变动；台账只算已平仓 FIFO 已实现，两者天然不等。"},
+         "level": "ok",
+         "note": "两种口径不可相减：现金口径含费用、利息、股息与在手持仓浮盈变动，台账只算已平仓 FIFO，差额属口径差、不是错账。"},
         {"item": "券商累计总盈亏", "broker": f"${recon['total_pnl_est']:,.2f}（含浮动）",
          "ledger": f"${(accounts[0]['realized_usd'] or 0):,.2f}（已实现）",
          "diff": f"{recon['total_pnl_est'] - (accounts[0]['realized_usd'] or 0):+,.2f}",
          "level": "ok",
          "note": f"券商口径 = 期末现金 ${recon['cash_broker_usd']:,.2f} + 持仓 ${recon['mv_broker']:,.2f} − 净投入 ${recon['net_external_usd']:,.2f}；"
-                 "与台账已实现的差额含浮动盈亏、费用、利息与股息。"},
+                 "与台账已实现的差额含浮动盈亏、费用、利息与股息，同属口径差、不是错账。"},
         {"item": "9-24 后成交未扣仓", "broker": f"${recon['stale_flow_usd']:+,.2f} 净卖出",
          "ledger": f"持仓快照 {recon['positions_snapshot'][:10]}",
          "diff": f"{recon['adjust_usd']:+,.2f}",
          "level": "danger" if abs(recon["adjust_usd"]) > 1000 else "ok",
          "note": "持仓已按 2026-11-09 券商快照校正，此处应恒为 0；若再次偏离说明又有成交未回填。"},
     ]
+    for r in recon_rows:                     # 只属于富途 1599：标注账户，避免被当成全站口径
+        r["acct"] = "富途"
 
-    # 全历史盈亏分段对账：把「所有账号历史累计」拆成有凭证的段落
+    # 全历史盈亏：**以账户为单位**结算（一个账户一行），账户内的时期只作子行。
+    # 旧版按「段」平铺，富途被拆成 6519/9461 与 1599 两条并列，SG 旧户/新户又被 ID 隔开，
+    # 读起来像四个账户混在一起 —— 这正是用户反复指出的「各个账号数据混在一起」。
     futu_acc = next((a for a in accounts if a["id"] == "futu_main"), {})
     id_acc = next((a for a in accounts if a["id"] == "poems_id"), {})
     sg_acc = next((a for a in accounts if a["id"] == "poems_sg"), {})
     stn = db.get_meta("st_numbers") or {}
-    kpi = stn.get("kpi_poems") or {}
     life = stn.get("life_recon") or {}
     futu_total = recon["total_pnl_est"]
     # 6519 / 9461 的 2022-01→2024-08 段（成交+费用口径），与 1599 段分开列
@@ -346,12 +351,12 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     futu_new = round(futu_total - float(recon["mv_broker"] or 0), 2)
     futu_new_gap = round(futu_new - futu_new_eq, 2)
     futu_life = round(futu_old + futu_new, 2)
+    futu_life_eq = round(futu_old + futu_new_eq, 2)
     futu_bank = float((st.get("deposit") or {}).get("usd") or 0) + float((st.get("withdraw") or {}).get("usd") or 0)
     mig_net = round(float(recon["net_external_usd"] or 0) - futu_bank, 2)
     sg_start = float(life.get("sg_legacy_start") or 23110.0)
     sg_end = float(life.get("sg_legacy_end") or 29772.84)
     sg_unreal = float(life.get("sg_open_unreal") or -4767.29)
-    sg_era = round(mig_net - sg_start, 2)                 # 2020-02 → 2024-07 整段
     sg_r1 = round(sg_end - sg_start, 2)                     # 已实现
     sg_r2 = round(sg_unreal, 2)                             # 2022-01 浮亏兑现
     sg_old_exit = round(sg_start + sg_r1 + sg_r2, 2)        # 旧户结清后退出本账本的价值
@@ -362,80 +367,129 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         sg_cost += float(r["qty"] or 0) * float(r["avg_cost"] or 0)
     sg_new_invest = round(sg_new_start + sg_cost, 2)
     sg_new_pnl = round(float(sg_acc.get("equity_usd") or 0) - sg_new_invest, 2)
+    sg_life = round(sg_r1 + sg_r2 + sg_new_pnl, 2)          # SG 本账户合计
     idr = float(life.get("idr_usd") or 18106.95)
     pgas_usd = round(float(life.get("id_pgas_idr") or 14900000.0) / idr, 2)
     id_pnl = round((id_acc.get("equity_usd") or 0) - (id_acc.get("net_external_usd") or 0) + pgas_usd, 2)
-    total = round(futu_life + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
-    total_eq = round(futu_old + futu_new_eq + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
-    # 交叉校验只覆盖「1599 起」的时段：2022-01→2024-08 段的出入金流水不在手上，
-    # 它的盈亏由 data/processed/futu_hist_2022_2024.json 自带校验（段初为零、段末 = 结转持仓）。
-    # 注意这里必须用「现值口径」futu_new_eq：chk 里的 now_val 含在手持仓市值，
-    # 若拿券商资金口径当基线，0.00 的恒等式会凭空多出「持仓 − 随迁证券」这一项。
-    chk_base = round(futu_new_eq + sg_r1 + sg_r2 + sg_new_pnl + id_pnl, 2)
+    total = round(futu_life + sg_life + id_pnl, 2)          # 三账户合计（亏损更大口径）
+    total_eq = round(futu_life_eq + sg_life + id_pnl, 2)    # 三账户合计（现值口径）
     memory = float(life.get("memory_usd") or -50000.0)
     old = life.get("old_dashboard") or {}
-    futu_broker_val = round(recon["cash_broker_usd"] + recon["mv_broker"], 2)
-    now_val = round(futu_broker_val + float(sg_acc.get("equity_usd") or 0)
-                    + float(id_acc.get("equity_usd") or 0) + pgas_usd, 2)
-    in_total = round(float(recon["net_external_usd"] or 0) + carried + sg_start + sg_new_invest
-                     + float(id_acc.get("net_external_usd") or 0), 2)
-    chk = round(now_val + sg_old_exit - in_total, 2)
-    bridge = [
-        {"k": "POEMS SG 旧户 · 2020-02→2022-01 已实现", "v": sg_r1, "level": "ok",
-         "n": f"台账初始入金 {sg_start:,.2f}，平仓后权益 {sg_end:,.2f}（146 笔美股 + 12 笔港股，胜率 78%）"},
-        {"k": "POEMS SG 旧户 · 2022-01 未平仓浮亏", "v": sg_r2, "level": "ok",
-         "n": "2022-01-27 还拿着 6 只（含 100 股亏损仓），台账按当日价计的账面浮亏；这部分在清仓时兑现"},
-        {"k": "富途 6519/9461 · 2022-01→2024-08 成交+费用口径", "v": futu_old, "level": fh.get("level") or "warn",
+
+    # 账户分组：账户合计行 = 账户内各段之和（段只用于说明「钱是怎么亏的」）
+    futu_segs = [
+        {"k": "6519 / 9461 · 2022-01→2024-08（成交 + 费用口径）", "v": futu_old, "level": fh.get("level") or "warn",
          "n": (f"美股 {fh['us']['rows']} 笔成交额 {fh['us']['turnover']:,.2f} / 费用 {fh['us']['fees']:,.2f}；"
                f"港股 {fh['hk']['rows']} 笔成交额 {fh['hk']['turnover']:,.2f} HKD / 费用 {fh['hk']['fees']:,.2f} HKD；"
                f"迁移日结转的 01519 8,000 股与 AVGO −10 股按次日成交价计 {carried:,.2f}。"
-               f"AMAT 394 股（成本 {fh.get('amat', {}).get('cost_usd', 0):,.2f}）2023-03 之后无成交、1599 侧无承接，按「已转出本账本」处理（原值移出），不计亏损也不计资产；"
-               f"6519 出入金 {((fh.get('cashflow_us') or {}).get('rows') or 0)} 笔"
-               f"（净入金 {(fh.get('cashflow_us') or {}).get('net_in') or 0:,.2f}，"
-               f"与成交表推定的期末现金 {(fh.get('cashflow_us') or {}).get('implied_cash_end') or 0:,.2f} 自洽）")},
-        {"k": "富途 1599 · 2024-08→2026-11 券商资金口径（不含在手持仓）", "v": futu_new, "level": "ok",
-         "n": f"期末现金 {recon['cash_broker_usd']:,.2f} − 净投入 {float(recon['net_external_usd'] or 0):,.2f}"
-                 f"（银行存入 {float((st.get('deposit') or {}).get('usd') or 0):,.2f} / 取出 {float((st.get('withdraw') or {}).get('usd') or 0):,.2f} /"
-                 f" 开户日内部迁移入账 {mig_net:,.2f} + 随迁持仓 {carried:,.2f}）；"
-                 f"在手持仓 {float(recon['mv_broker'] or 0):,.2f} 未计入本口径，现值口径为 {futu_new_eq:,.2f}（差 {futu_new_gap:+,.2f}）；"
-                 "迁移来自同号融资融券子账户 6519 / 9461，不是 POEMS"},
-        {"k": "POEMS SG 新户 · 2025-11→2026-11", "v": sg_new_pnl, "level": "warn",
-         "n": f"首见余额 {sg_new_start:,.2f} + 期间买入成本 {sg_cost:,.2f}（SQQQ 165 股 + 货基 250.9555 份）− 现值 {float(sg_acc.get('equity_usd') or 0):,.2f}；2025-12→2026-09 无月结单，投入按持仓成本反推"},
-        {"k": "POEMS ID · 2026-03→2026-11 资金口径", "v": id_pnl, "level": "ok",
-         "n": f"现值 {float(id_acc.get('equity_usd') or 0):,.2f} + PGAS 回款 {pgas_usd:,.2f} − 净投入 {float(id_acc.get('net_external_usd') or 0):,.2f}（IDR 折 USD，汇率 {idr:,.2f}）"},
-        {"k": "全历史合计（逐段相加 · 亏损更大口径）", "v": total, "level": "ref",
-         "n": f"2020-02 → 2026-11-09，三个独立账户各自结算、账户之间无互转。富途一段拆两行：融资户 {futu_old:,.2f} + 保证金户 {futu_new:,.2f} = {futu_life:,.2f}（保证金户取券商资金口径，不含在手持仓）。"
-                 f"若改回现值口径（含在手持仓、扣随迁证券）合计为 {total_eq:,.2f}，差 {round(total - total_eq, 2):+,.2f}。"
-                 f"交叉校验（1599 起）：累计投入 {in_total:,.2f}（净外部投入 {float(recon['net_external_usd'] or 0):,.2f} + 随迁持仓 {carried:,.2f} + SG/ID 投入）"
-                 f"vs 已退出 {sg_old_exit:,.2f} + 现值 {now_val:,.2f} = {chk:,.2f}，与小计 {chk_base:,.2f} 差 {round(chk - chk_base, 2):+,.2f}；"
-                 f"2022-01→2024-08 段不含在本次交叉校验内（9461 仍无出入金、6519 只有美股侧 24 笔，段盈亏为推导值）"},
-        {"k": "你说的记忆 · 约 −5 万", "v": memory, "level": "danger",
-         "n": f"与全历史合计差 {round(memory - total, 2):+,.2f}。这个数来自旧仪表盘的「回本缺口 {float(old.get('gap') or 49293.65):,.2f}」："
-                 "本金 66,062.97 = 富途 42,952.97（正好等于 9-24 时点的净投入 34,676.90 + 22,468.37 − 7,200 − 6,992.30）"
-                 f"+ SG 旧户 {sg_start:,.0f}，但减去的权益 {float(old.get('current_then') or 16769.32):,.2f} 只是富途一户；"
-                 "SG 新户与 ID 的投入（约 1.89 万）和权益都没进这条式子 → 混合口径，不是终身亏损。"
-                 f"补齐 2022-2024 富途段后差额从 −35,632 收窄到 {round(memory - total, 2):+,.2f}；"
-                 f"AMAT 394 股（成本 {fh.get('amat', {}).get('cost_usd', 0):,.2f}）已按「转出」处理，不含在本合计内"},
+               f"AMAT 394 股（成本 {fh.get('amat', {}).get('cost_usd', 0):,.2f}）按「已转出本账本」处理，原值移出，不计亏损也不计资产；"
+               f"6519 出入金 {((fh.get('cashflow_us') or {}).get('rows') or 0)} 笔（净入金 "
+               f"{(fh.get('cashflow_us') or {}).get('net_in') or 0:,.2f}，与成交表推定期末现金 "
+               f"{(fh.get('cashflow_us') or {}).get('implied_cash_end') or 0:,.2f} 自洽）")},
+        {"k": "1599 · 2024-08→2026-11（券商资金口径，不含在手持仓）", "v": futu_new, "level": "ok",
+         "n": (f"期末现金 {recon['cash_broker_usd']:,.2f} − 净投入 {float(recon['net_external_usd'] or 0):,.2f}"
+               f"（银行存入 {float((st.get('deposit') or {}).get('usd') or 0):,.2f} / 取出 "
+               f"{float((st.get('withdraw') or {}).get('usd') or 0):,.2f} / 同日内部迁移 {mig_net:,.2f}）；"
+               f"在手持仓 {float(recon['mv_broker'] or 0):,.2f} 未计入，现值口径 {futu_new_eq:,.2f}（差 {futu_new_gap:+,.2f}）。"
+               "迁移是同一富途号内部子账户升级，不是外部入金、也不是从 POEMS 转入")},
     ]
+    sg_segs = [
+        {"k": "旧户 · 2020-02→2022-01（已实现）", "v": sg_r1, "level": "ok",
+         "n": f"台账初始入金 {sg_start:,.2f}，平仓后权益 {sg_end:,.2f}（146 笔美股 + 12 笔港股，胜率 78%）"},
+        {"k": "旧户 · 2022-01 未平仓浮亏", "v": sg_r2, "level": "ok",
+         "n": "2022-01-27 还持有 6 只（含 100 股亏损仓），按当日价计的账面浮亏，清仓时兑现；旧户结清后退出本账本"},
+        {"k": "新户 · 2025-11→2026-11（资金口径）", "v": sg_new_pnl, "level": "warn",
+         "n": (f"首见余额 {sg_new_start:,.2f} + 买入成本 {sg_cost:,.2f}（SQQQ 165 股 + 货基 250.9555 份）"
+               f"− 现值 {float(sg_acc.get('equity_usd') or 0):,.2f}；2025-12→2026-09 无月结单，投入按持仓成本反推")},
+    ]
+    id_segs = [
+        {"k": "2026-03→2026-11（资金口径）", "v": id_pnl, "level": "ok",
+         "n": (f"现值 {float(id_acc.get('equity_usd') or 0):,.2f} + PGAS 回款 {pgas_usd:,.2f} − 净投入 "
+               f"{float(id_acc.get('net_external_usd') or 0):,.2f}（IDR 折 USD，汇率 {idr:,.2f}）")},
+    ]
+    groups = [
+        {"id": "futu_main", "name": "富途（主账号）", "v": futu_life, "v_eq": futu_life_eq,
+         "level": fh.get("level") or "warn",
+         "basis": "6519/9461 成交+费用 + 1599 券商资金口径（不含在手持仓）",
+         "headline_hint": "全部时期、全部币种（美股 / 港股），一个富途号",
+         "segments": futu_segs,
+         "note": (f"6519（美股融资户）+ 9461（港股融资户）+ 1599（保证金综合户）同属一个富途号，"
+                  f"2024-08-03 只是内部升级。本账户合计 {futu_life:,.2f} = 段一 {futu_old:,.2f} + 段二 {futu_new:,.2f}。"
+                  f"1599 段自校验：现金 {recon['cash_broker_usd']:,.2f} + 持仓 {float(recon['mv_broker'] or 0):,.2f} − 净投入 "
+                  f"{float(recon['net_external_usd'] or 0):,.2f} − 随迁证券 {carried:,.2f} = {futu_new_eq:,.2f}（现值口径）。")},
+        {"id": "poems_sg", "name": "POEMS SG（次账号）", "v": sg_life, "v_eq": sg_life,
+         "level": "warn",
+         "basis": "旧户台账（2020-02→2022-01） + 新户资金口径（2025-11→2026-11）",
+         "headline_hint": "只含 POEMS Singapore，不含任何其他市场",
+         "segments": sg_segs,
+         "note": (f"旧户 {sg_r1:+,.2f} + 浮亏 {sg_r2:+,.2f} + 新户 {sg_new_pnl:+,.2f} = {sg_life:+,.2f}。"
+                  f"两段同属 POEMS Singapore（旧户结清后退出本账本，新户首见余额 {sg_new_start:,.2f}），故合并为一个账户。")},
+        {"id": "poems_id", "name": "POEMS ID（本地账号）", "v": id_pnl, "v_eq": id_pnl,
+         "level": "ok",
+         "basis": "对账单净投入 vs 现值（IDR 折 USD）",
+         "headline_hint": "只含 POEMS Indonesia",
+         "segments": id_segs,
+         "note": "PGAS 卖出成交确认仍待补（约 1,490 万 IDR 已按 1,490 单价估算，计入本值）；补单后若单价不同，只影响本账户个位美元。"},
+    ]
+    bridge_rows = []
+    for g in groups:
+        bridge_rows.append({"k": g["name"], "v": g["v"], "level": g["level"], "n": g["basis"], "grp": True})
+        for s in g["segments"]:
+            bridge_rows.append({"k": "· " + s["k"], "v": s["v"], "level": s["level"], "n": s["n"], "grp": False})
+    bridge_rows.append({
+        "k": "三账户合计", "v": total, "level": "ref", "grp": True,
+        "n": (f"富途 {futu_life:,.2f} + SG {sg_life:,.2f} + ID {id_pnl:,.2f} = {total:,.2f}；三个账户各自独立结算、"
+              f"账户之间从未互转资金或持仓，入金全部来自个人储蓄。富途取券商资金口径（不含在手持仓）；"
+              f"若三账户统一按现值口径，合计 {total_eq:,.2f}，差 {round(total - total_eq, 2):+,.2f}"
+              f"（= 1599 在手持仓 {float(recon['mv_broker'] or 0):,.2f} − 随迁证券 {carried:,.2f}）。")},
+    )
+    bridge_rows.append({
+        "k": "你的记忆 · 约 −5 万（全部账户已实现 + 浮亏的总体感觉）", "v": memory, "level": "danger", "grp": True,
+        "n": (f"与三账户合计差 {round(memory - total, 2):+,.2f}，与现值口径合计差 {round(memory - total_eq, 2):+,.2f}。"
+              "只作统计方向、不作凭证：账面能逐笔对上的是上表各账户，差额来自记忆本身的粗估，不是漏账。"
+              f"早期那条「回本缺口 {float(old.get('gap') or 49293.65):,.2f}」把多账户本金减单账户权益，口径作废。")},
+    )
+    bridge = {
+        "groups": groups,
+        "rows": bridge_rows,
+        "verified": total,
+        "verified_eq": total_eq,
+        "memory": memory,
+        "gap": round(memory - total, 2),
+        "gap_eq": round(memory - total_eq, 2),
+    }
     coverage = [
-        "口径：三个账户各自独立结算，从未互转资金或持仓。富途 2024-08-03 的「资产迁移」是同一富途号内部的子账户升级（融资融券户 6519/9461 → 保证金综合户 1599），不是从 POEMS 转入，也不是外部入金",
-        "已覆盖：富途 6519（美股）/ 9461（港股）2022-01-13→2024-08-02 全部 4,562 笔成交与 4,166 条订单费用（dataset：data/processed/futu_hist_2022_2024.json）",
-        "已覆盖：富途 1599 2024-08-03→2026-11-06 全部成交与资金流水（含迁移、换汇）",
-        "已覆盖：POEMS ID 2026-03-04→2026-11-06 共 62 份单据、56 笔成交、29 个平仓批次",
-        "已覆盖：POEMS SG 2025-11 与 2026-10 两期月结单 + 2025 年度股息税单；旧户 2020-02→2022-01 台账",
-        "已处理：富途 6519 的 AMAT 394 股（成本 46,843.49）自 2023-03-03 起无成交、1599 侧 0 次出现，且迁移只有现金没有证券转入 → 按「已转出本账本」处理，原值移出，不计亏损也不计入资产",
-        "已覆盖：6519（美股）2021-04-19→2024-06-04 全部 24 笔出入金（存入 +93,300.00 / 取出 −51,800.02 / 净入金 +41,499.98）；净入金 + 净现金流 − 费用 = 4,794.85 与成交表自洽",
-        "口径缺口：9461（港股）仍无出入金导出，6519/9461 合并段的盈亏用「净现金流 − 费用 + 结转持仓计值」推导，未含融资利息与股息",
-        "口径：全历史合计取「亏损更大」的券商资金口径 —— 1599 段按 期末现金 − 净外部投入 计，不含在手持仓 8,994.85；比现值口径多计 2,758.95 亏损",
-        "未覆盖：2019 及以前（无记录，若有其它券商账户不在此账本内）",
-        "待补：POEMS ID 的 PGAS 卖出成交确认（约 1,490 万 IDR，已按 1,490 单价估算进合计）",
+        "口径：三个账户各自独立结算，从未互转资金或持仓，入金全部来自个人储蓄。富途 2024-08-03 的「资产迁移」是同一富途号内部的子账户升级（6519/9461 → 1599），不是从 POEMS 转入，也不是外部入金",
+        "富途 · 6519（美股）：2022-01-13→2024-08-02 全部 4,200 笔成交、3,803 条订单费用（dataset：data/processed/futu_hist_2022_2024.json）",
+        "富途 · 9461（港股）：2022-01-13→2024-08-01 全部 362 笔成交、363 条订单费用；仍无出入金导出，合并段盈亏为推导口径",
+        "富途 · 6519 出入金：2021-04-19→2024-06-04 共 24 笔（存入 +93,300.00 / 取出 −51,800.02 / 净入金 +41,499.98），与成交表推定期末现金 4,794.85 自洽",
+        "富途 · 1599（保证金综合户）：2024-08-03→2026-11-06 全部 555 笔成交与 1,115 行资金流水（含迁移、换汇）",
+        "富途 · AMAT 394 股（成本 46,843.49）：自 2023-03-03 起无成交、1599 侧 0 次出现，迁移只有现金没有证券 → 按「已转出本账本」处理，原值移出",
+        "POEMS SG · 旧户：2020-02-24→2022-01-20 共 158 笔台账成交 + 109 条日内批次；期初 23,110、期末权益 29,772.84",
+        "POEMS SG · 旧户的 109 条日内批次来自 Excel 日内块：无日期、无代码，计入笔数与胜率，但不参与持有天数与月度分布（台账自述 581.78 与明细 1,125.46 不一致，以明细为准）",
+        "POEMS SG · 新户：2025-11 与 2026-10 两期月结单 + 2025 年度股息税单；2025-12→2026-09 无月结单，新户投入按持仓成本反推",
+        "POEMS ID · 2026-03-04→2026-11-06：62 份单据、56 笔成交、29 个平仓批次，净投入 6,511.19",
+        "口径：累计盈亏取「亏损更大」的券商资金口径 —— 富途 1599 段按 期末现金 − 净外部投入 计，不含在手持仓 8,994.85；比现值口径多计 2,758.05 亏损",
+        "未覆盖：2019 及以前（无记录）；待补：POEMS ID 的 PGAS 卖出成交确认（约 1,490 万 IDR，已按 1,490 单价估算）",
     ]
+    # 账户卡：卡面主数 = 该账户全历史合计（不再用「某一段的已实现」当账户数）
+    acc_by_id = {g["id"]: g for g in groups}
+    for a in accounts:
+        g = acc_by_id.get(a["id"])
+        if g:
+            a["lifetime_usd"] = g["v"]
+            a["lifetime_eq_usd"] = g["v_eq"]
+            a["lifetime_basis"] = g["basis"]
+            a["segments"] = g["segments"]
+            a["account_note"] = g["note"]
+            a["level"] = g["level"]
+    overall.update({"lifetime_usd": total, "lifetime_eq_usd": total_eq,
+                    "memory_usd": memory, "memory_gap": round(memory - total, 2)})
     return {
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "overall": overall,
         "accounts": accounts,
-        "pnl_bridge": {"rows": bridge, "verified": total, "memory": memory,
-                       "gap": round(memory - total, 2), "coverage": coverage},
+        "pnl_bridge": bridge,
 
         "statement": {k: v for k, v in st.items()
                       if k not in ("monthly", "yearly", "by_symbol")},

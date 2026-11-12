@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ST v5 · 一个账本，两个门面</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232b5cff'/%3E%3Ctext x='16' y='22' font-size='16' font-family='Arial' font-weight='700' fill='white' text-anchor='middle'%3EST%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=88">
+<link rel="stylesheet" href="style.css?v=89">
 </head>
 <body>
 <header class="topbar">
@@ -243,32 +243,32 @@
       <div class="mx-accs" id="mxAccounts"></div>
       <div class="mx-block">
         <div class="mx-block-head">
-          <h3>券商流水核对</h3>
+          <h3>富途 1599 · 券商流水核对</h3>
           <span class="chip info" id="mxStTag">富途 · 资金明细</span>
         </div>
         <div class="table-wrap">
           <table class="grid compact mx-recon" id="mxRecon">
-            <thead><tr><th>项目</th><th>券商口径</th><th>系统台账</th><th class="num">差额</th><th>说明</th></tr></thead>
+            <thead><tr><th>项目（仅富途）</th><th>券商口径</th><th>系统台账</th><th class="num">差额</th><th>说明</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
       </div>
       <div class="mx-block">
         <div class="mx-block-head">
-          <h3>全历史盈亏 · 分段对账</h3>
+          <h3>账户盈亏 · 三账户对账</h3>
           <span class="chip info" id="mxBridgeTag">核对「亏了 5 万」</span>
         </div>
         <div id="bridgeChart" class="chart short"></div>
         <div class="table-wrap">
           <table class="grid compact mx-recon" id="mxBridge">
-            <thead><tr><th>期间 / 账户</th><th class="num">金额 USD</th><th>说明 / 证据</th></tr></thead>
+            <thead><tr><th>账户 / 账户内时期</th><th class="num">金额 USD</th><th>说明 / 证据</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
         <div class="mx-bridge-note" id="mxBridgeNote"></div>
       </div>
       <div class="mx-block">
-        <div class="mx-block-head"><h3>资金去向</h3><span class="hint">USD 折算，出金/费用为负</span></div>
+        <div class="mx-block-head"><h3>资金去向 · 富途 1599</h3><span class="hint">仅富途券商流水，USD 折算，出金/费用为负</span></div>
         <div class="mx-buckets" id="mxBuckets"></div>
       </div>
       <div class="mx-block">
@@ -548,6 +548,6 @@
 </footer>
 
 <script src="echarts.min.js?v=56"></script>
-<script src="app.js?v=88"></script>
+<script src="app.js?v=89"></script>
 </body>
 </html>

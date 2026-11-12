@@ -55,10 +55,25 @@ PHASES = [
 ]
 
 ACCOUNT_LABEL = {
-    "futu_main": "富途 1599",
+    "futu_main": "富途",
     "poems_sg": "POEMS SG",
     "poems_id": "POEMS ID",
 }
+# 富途的子账户名（6519/9461、1599）只作括号里的子标识，不能被读成另一个账户
+SUB_LABEL = {"富途 6519/9461": "6519/9461", "富途 1599": "1599"}
+
+
+def _acct_name(label: str) -> str:
+    """把「富途 6519/9461」这类子账户标签收敛回账户名。"""
+    if label.startswith("富途"):
+        return "富途"
+    return label
+
+
+def _acct_sub(label: str) -> str | None:
+    if label in SUB_LABEL:
+        return SUB_LABEL[label]
+    return None
 
 
 def _rates() -> dict:
@@ -366,21 +381,30 @@ def build() -> dict:
             agg["win_rate"] = None
             realized_kind = "整段口径，无法逐月细分"
 
-        acc_counts = Counter(t.get("label") or ACCOUNT_LABEL.get(t["account"], t["account"]) for t in tr)
+        labels: dict[str, list[str]] = {}
+        for t in tr:
+            lab = t.get("label") or ACCOUNT_LABEL.get(t["account"], t["account"])
+            name, sub = _acct_name(lab), _acct_sub(lab)
+            key2 = f"{name}·{sub}" if sub else name
+            labels.setdefault(key2, []).append(t)
+        acc_counts = [(k, len(v)) for k, v in labels.items()]
+        acc_counts.sort(key=lambda kv: -kv[1])
         if key == "p1":
-            acc_counts = Counter({"POEMS SG 旧户": len(sg["all"])})
+            acc_counts = [("POEMS SG·旧户", len(sg["all"]))]
         months = len(span)
         agg.update({
             "key": key, "title": title, "behavior": behavior,
             "start": start, "end": end, "months": months,
-            "accounts": [name for name, _ in acc_counts.most_common()],
-            "account_counts": [{"name": k, "n": v} for k, v in acc_counts.most_common()],
+            "accounts": [k for k, _ in acc_counts],
+            "account_counts": [{"name": k.split("·")[0],
+                                "sub": k.split("·")[1] if "·" in k else None,
+                                "n": v} for k, v in acc_counts],
             "trades_per_month": (agg["trades"] / months) if months else None,
             "realized_kind": realized_kind,
             "span_label": f"{start[:7]} → {end[:7]}",
         })
         if key in ("p2", "p3", "p4", "p5"):
-            agg["realized_hint"] = "整段 6519/9461 合计 −$3,265（成交+费用口径，见分段对账），无法拆到单月"
+            agg["realized_hint"] = "富途 6519/9461 整段合计 −$3,268（成交+费用口径，见账户对账），无法拆到单月"
         phases.append(agg)
 
     all_months = _month_span(PHASES[0][3], PHASES[-1][4])

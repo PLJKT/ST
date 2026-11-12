@@ -506,63 +506,62 @@ function renderMix(ov) {
 }
 function renderWaterfall(br) {
   const el = $("#bridgeChart");
-  if (!el || !br || !br.rows) return;
+  if (!el || !br) return;
+  const groups = br.groups || [];
+  if (!groups.length || br.verified == null) return;
   if (!state.chartBridge) state.chartBridge = echarts.init(el);
-  const comps = br.rows.filter(r => r.level !== "ref" && r.level !== "danger");
-  const total = br.rows.find(r => r.level === "ref");
-  let cum = 0;
   const labels = [], base = [], delta = [], colors = [], raw = [];
-  comps.forEach(r => {
-    const parts = String(r.k).split("·");
-    let acct = parts[0].trim()
-      .replace("富途 6519/9461", "富途旧段").replace("富途 1599", "富途")
-      .replace("POEMS SG 旧户", "SG旧户").replace("POEMS SG 新户", "SG新户")
-      .replace("POEMS ID", "ID")
-      .replace("全历史合计（逐段相加）", "合计").replace(/\s+/g, "");
-    const tail = (parts[1] || "").replace(/\d{4}-\d{2}→\d{4}-\d{2}/, "").trim();
-    const tag = tail.includes("已实现") ? "已实现" : tail.includes("浮亏") ? "浮亏"
-      : tail.includes("成交") ? "成交口径" : tail.includes("券商口径") ? "券商口径"
-      : tail.includes("资金口径") ? "资金口径" : "";
-    labels.push(tag ? acct + "\n" + tag : acct);
-    base.push(toBase(Math.min(cum, cum + r.v)));
-    delta.push(Math.abs(toBase(r.v)));
-    raw.push(r.v);
-    colors.push(r.v >= 0 ? "#2ee6a8" : "#ff6b6b");
-    cum += r.v;
+  let cum = 0;
+  // 每个账户一根柱，账户内的段不进图（段太多、会把图读成「四个账户」）
+  groups.forEach(g => {
+    const short = g.name.replace(/（.*?）/g, "");
+    labels.push(short);
+    base.push(toBase(Math.min(cum, cum + g.v)));
+    delta.push(Math.abs(toBase(g.v)));
+    raw.push({ k: g.name, v: g.v, n: g.basis });
+    colors.push(g.v >= 0 ? "#2ee6a8" : "#ff6b6b");
+    cum += g.v;
   });
-  if (total) {
-    labels.push("合计");
-    base.push(toBase(Math.min(0, total.v)));
-    delta.push(Math.abs(toBase(total.v)));
-    raw.push(total.v);
-    colors.push(total.v >= 0 ? "#2ee6a8" : "#4f8cff");
-    cum = total.v;
+  labels.push("三账户合计");
+  base.push(toBase(Math.min(0, br.verified)));
+  delta.push(Math.abs(toBase(br.verified)));
+  raw.push({ k: "三账户合计", v: br.verified, n: "富途 + SG + ID" });
+  colors.push("#4f8cff");
+  cum = br.verified;
+  if (br.memory != null) {
+    labels.push("记忆 −5 万");
+    base.push(toBase(Math.min(0, br.memory)));
+    delta.push(Math.abs(toBase(br.memory)));
+    raw.push({ k: "记忆（只作方向）", v: br.memory, n: `与合计差 ${signed(br.gap)}` });
+    colors.push("#7b8aa6");
   }
   const opt = {
     backgroundColor: "transparent",
     animation: false,
     tooltip: {
-      trigger: "axis", axisPointer: { type: "shadow" },
+      trigger: "item",
       backgroundColor: "#101826", borderColor: "#243247", textStyle: { color: "#dbe6f5", fontSize: 11 },
-      formatter: ps => {
-        const i = ps[0].dataIndex;
-        return `<b>${labels[i]}</b><br/>${signedB(raw[i])}`;
+      formatter: p => {
+        const r = raw[p.dataIndex];
+        return `<b>${r.k}</b><br/>${signedB(r.v)}<br/><span style="color:#8b9bb4">${r.n || ""}</span>`;
       },
     },
-    grid: { left: 8, right: 18, top: 22, bottom: 42, containLabel: true },
+    grid: { left: 8, right: 18, top: 30, bottom: 30, containLabel: true },
     xAxis: { type: "category", data: labels,
       axisLine: { lineStyle: { color: "#1f2a3a" } }, axisTick: { show: false },
-      axisLabel: { color: "#8b9bb4", fontSize: 10.5, interval: 0, lineHeight: 14, formatter: v => v } },
+      axisLabel: { color: "#c3cddd", fontSize: 11, interval: 0, lineHeight: 14 } },
     yAxis: { type: "value",
       splitLine: { lineStyle: { color: "#17202e" } },
       axisLabel: { color: "#5f6f88", fontSize: 10, formatter: v => (v === 0 ? "0" : (v > 0 ? "+" : "−") + nf0.format(Math.abs(v))) } },
     series: [
-      { name: "base", type: "bar", stack: "wf", silent: true, barWidth: 26,
+      { name: "base", type: "bar", stack: "wf", silent: true, barWidth: 34,
         itemStyle: { color: "transparent", borderWidth: 0 }, data: base, tooltip: { show: false } },
-      { name: "delta", type: "bar", stack: "wf", barWidth: 26,
+      { name: "delta", type: "bar", stack: "wf", barWidth: 34,
         data: delta.map((d, i) => ({ value: d, itemStyle: { color: colors[i], borderRadius: 3 } })),
         label: { show: true, position: "top", color: "#dbe6f5", fontSize: 10, fontWeight: 600,
-          formatter: p => signedB(raw[p.dataIndex]) } },
+          formatter: p => signedB(raw[p.dataIndex].v) },
+        markLine: { silent: true, symbol: "none", lineStyle: { color: "#2a3a52", type: "dashed" },
+          data: [{ yAxis: 0 }], label: { show: false } } },
     ],
   };
   state.chartBridge.setOption(opt, true);
@@ -1017,64 +1016,92 @@ function renderMetrics(m) {
   const recon = m.recon || {};
   const futu = accs.find(a => a.id === "futu_main") || {};
   const sg = accs.find(a => a.id === "poems_sg") || {};
+  const pi = accs.find(a => a.id === "poems_id") || {};
+  const br = m.pnl_bridge || {};
 
   const warnCnt = (m.recon_rows || []).filter(r => r.level !== "ok").length;
   $("#mxHint").textContent =
-    `${ov.start || "—"} → ${ov.end || "—"} · ${ov.years || 0} 年 · 对账 ${warnCnt} 项待解释`;
+    `${ov.start || "—"} → ${ov.end || "—"} · ${ov.years || 0} 年 · 三账户各自独立结算 · 对账 ${warnCnt} 项待解释`;
 
-  const pi = accs.find(x => x.id === "poems_id") || {};
+  // Hero：每一项都只指向一个口径，绝不把三个账户的不同口径相加后当「总数」
   const hero = [
-    ["总交易期间", `${ov.years} 年`, `${ov.start || "—"} → ${ov.end || "—"} · ${nf0.format(ov.days || 0)} 天`, ""],
-    ["平仓笔数", nf0.format(ov.closed_trades || 0), `券商成交 ${nf0.format(ov.broker_trades || 0)} 笔 · 含 POEMS ID ${nf0.format(pi.closed_trades || 0)}`, ""],
-    ["已实现盈亏", signed(ov.realized_usd), `富途 ${signed(futu.realized_usd)} · SG ${signed(sg.realized_usd)} · ID ${signed(pi.realized_usd)}`, signCls(ov.realized_usd)],
-    ["净外部投入", money2(ov.net_external_usd), `存入 ${money2(futu.deposit_usd)} · 取出 ${money2(futu.withdraw_usd)} · 迁移 ${money2(futu.migration_usd)}`, ""],
-    ["平均持仓", ov.avg_hold_days == null ? "—" : num(ov.avg_hold_days, 1) + " 天", `台账可算部分：POEMS SG ${nf0.format(sg.closed_trades || 0)} + ID ${nf0.format(pi.closed_trades || 0)} 笔`, ""],
-    ["单笔平均回报", pct(ov.avg_month_return, 2) + " / 月", `年化 ${pct(ov.annual_return, 1)}（SG 单笔口径）· ID 资金口径 ${pct(pi.avg_month_return, 2)}/月`, signCls(ov.avg_month_return)],
+    ["三账户累计盈亏", `${signed(br.verified)}`,
+      `富途 ${signed(futu.lifetime_usd)} · SG ${signed(sg.lifetime_usd)} · ID ${signed(pi.lifetime_usd)}`,
+      signCls(br.verified || 0)],
+    ["你的记忆（只作方向）", `${signed(br.memory)}`,
+      `与三账户合计差 ${signed(br.gap)} · 与现值口径合计差 ${signed(br.gap_eq)}`,
+      "warn"],
+    ["交易期间", `${ov.years || 0} 年`, `${ov.start || "—"} → ${ov.end || "—"} · ${nf0.format(ov.days || 0)} 天`, ""],
+    ["平仓 / 事件笔数", nf0.format(ov.closed_trades || 0),
+      `富途 ${nf0.format(futu.trade_events || 0)} 事件 · SG ${nf0.format(sg.closed_trades || 0)} 批次 · ID ${nf0.format(pi.closed_trades || 0)} 批次`, ""],
+    ["富途净外部投入", money2(futu.net_external_usd),
+      `存入 ${money2(futu.deposit_usd)} · 取出 ${money2(futu.withdraw_usd)} · 同日内部迁移 ${money2(futu.migration_usd)}（同号子账户升级，非入金）`, ""],
+    ["平均持仓（SG / ID）",
+      `${sg.avg_hold_days == null ? "—" : num(sg.avg_hold_days, 1)} / ${pi.avg_hold_days == null ? "—" : num(pi.avg_hold_days, 1)} 天`,
+      "分账户计算，不合并；富途事件只记平仓日、无开仓日", ""],
   ];
   $("#mxHero").innerHTML = hero.map(([k, v, s, cls]) => `
     <div class="kpi"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`).join("");
 
+  const realizedLabel = { futu_main: "已实现（1599 事件）", poems_sg: "已实现（旧户台账）", poems_id: "已实现（平仓批次）" };
   $("#mxAccounts").innerHTML = accs.map(a => {
+    const life = a.lifetime_usd;
     const rows = [
       ["交易期间", `${a.start || "—"} → ${a.end || "—"}`, `${nf0.format(a.days || 0)} 天`],
-      ["笔数", a.closed_trades ? `${nf0.format(a.closed_trades)} 笔平仓` : `${nf0.format(a.trade_events || 0)} 笔平仓`, `胜率 ${a.win_rate == null ? "—" : pct(a.win_rate, 1)}`],
-      ["已实现", a.realized_usd ? signed(a.realized_usd) : "—", a.realized_detail_usd && a.realized_detail_usd !== a.realized_usd ? `明细合计 ${signed(a.realized_detail_usd)}` : (a.closed_trades || a.trade_events ? "FIFO 平仓" : "无平仓记录")],
-      ["出入金", a.net_external_usd == null ? "台账未记" : `净 ${signed(a.net_external_usd)}`, a.deposit_usd == null ? "无流水" : `入 ${money2(a.deposit_usd)} / 出 ${money2(a.withdraw_usd)}`],
-      ["持仓时长", a.avg_hold_days == null ? "缺开仓日" : `${num(a.avg_hold_days, 1)} 天`, a.avg_hold_days == null ? "事件只记平仓日" : "平均值"],
+      ["笔数", a.closed_trades ? `${nf0.format(a.closed_trades)} 笔平仓` : `${nf0.format(a.trade_events || 0)} 笔平仓`,
+        `胜率 ${a.win_rate == null ? "—" : pct(a.win_rate, 1)}`],
+      [realizedLabel[a.id] || "已实现", a.realized_usd == null ? "—" : signed(a.realized_usd),
+        a.id === "poems_sg" && a.realized_detail_usd ? `逐笔毛口径 ${signed(a.realized_detail_usd)}（含费用差）` : "仅平仓口径，与左侧累计不同源"],
+      ["出入金", a.net_external_usd == null ? "台账未记" : `净 ${signed(a.net_external_usd)}`,
+        a.deposit_usd == null ? "无流水" : `入 ${money2(a.deposit_usd)} / 出 ${money2(a.withdraw_usd)}`],
+      ["持仓时长", a.avg_hold_days == null ? "缺开仓日" : `${num(a.avg_hold_days, 1)} 天`,
+        a.avg_hold_days == null ? "事件只记平仓日" : "平均值"],
       ["回报率", a.avg_month_return == null ? (a.capital_weighted_annual == null ? "—" : pct(a.capital_weighted_annual, 1) + " / 年") : pct(a.avg_month_return, 2) + " / 月",
-        a.annual_return == null ? "资金加权口径" : pct(a.annual_return, 1) + " / 年" + (a.return_basis ? `（${a.return_basis}）` : "")],
+        a.annual_return == null ? "资金加权口径" : pct(a.annual_return, 1) + " / 年" + (a.return_basis ? ` · ${a.return_basis}` : "")],
     ];
     const zero = !(a.closed_trades || a.trade_events || a.net_external_usd);
+    const lv = { ok: "ok", warn: "warn", danger: "off" }[a.level] || "info";
+    const lb = { ok: "凭证完整", warn: "口径注意", danger: "对不上" }[a.level] || "";
+    const segs = (a.segments || []).map(s => `<div class="mx-seg"><span>${s.k}</span>
+      <b class="${s.v >= 0 ? "up" : "down"}">${signed(s.v)}</b></div>`).join("");
     return `<div class="mx-acc ${zero ? "muted" : ""}">
-      <div class="mx-top"><span class="mx-name">${a.name}</span><span class="mx-period">${mxCcyTag(a)}</span></div>
-      <div class="mx-big ${signCls(a.realized_usd)}">${(a.closed_trades || a.trade_events) ? signed(a.realized_usd) : "—"}<small>已实现</small></div>
+      <div class="mx-top"><span class="mx-name">${a.name}${lb ? " " + chip(lb, lv) : ""}</span>
+        <span class="mx-period">${mxCcyTag(a)}</span></div>
+      <div class="mx-basis">${a.lifetime_basis || ""}</div>
+      <div class="mx-big ${signCls(life || 0)}">${life == null ? "—" : signed(life)}<small>全历史累计</small></div>
       <div class="mx-rows">${rows.map(([k, v, s]) => `<div><span>${k}</span><b>${v}<span class="muted"> · ${s}</span></b></div>`).join("")}</div>
+      <div class="mx-segs">${segs}</div>
       <div class="mx-tags">${(a.tags || []).map(t => chip(`${t.k} ${t.v}`, "tag-mini " + (t.k.includes("缺") ? "warn" : "info"))).join("")}</div>
     </div>`;
   }).join("");
 
   $("#mxRecon").querySelector("tbody").innerHTML = (m.recon_rows || []).map(r => `
-    <tr><td>${r.item} ${chip({ ok: "通过", warn: "待解释", danger: "差异大" }[r.level] || r.level, r.level === "ok" ? "ok" : r.level)}</td>
+    <tr><td>${r.acct ? `<span class="muted">${r.acct} · </span>` : ""}${r.item} ${chip({ ok: "通过", warn: "待解释", danger: "差异大" }[r.level] || r.level, r.level === "ok" ? "ok" : r.level)}</td>
       <td>${r.broker}</td><td>${r.ledger}</td>
       <td class="num ${r.level === "danger" ? "down" : ""}">${r.diff}</td>
       <td>${r.note}</td></tr>`).join("");
 
   const st = m.statement || {};
-  const br = m.pnl_bridge || {};
-  $("#mxBridgeTag").textContent = `全历史 ${signed(br.verified || 0)} · 记忆 ${signed(br.memory || 0)} · 差 ${signed(br.gap || 0)}`;
+  $("#mxBridgeTag").textContent = `三账户 ${signed(br.verified || 0)} · 记忆 ${signed(br.memory || 0)} · 差 ${signed(br.gap || 0)}`;
   $("#mxBridge").querySelector("tbody").innerHTML = (br.rows || []).map(r => {
     const lv = { ok: "ok", warn: "warn", danger: "off", ref: "info" }[r.level] || "info";
     const lb = { ok: "凭证完整", warn: "口径注意", danger: "对不上", ref: "合计" }[r.level] || r.level;
-    return `<tr><td>${r.k} ${chip(lb, lv)}</td><td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td>${r.n}</td></tr>`;
+    if (r.grp) {
+      const cls = r.level === "ref" ? "grp-ref" : "grp";
+      return `<tr class="${cls}"><td>${r.k} ${chip(lb, lv)}</td>
+        <td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td>${r.n}</td></tr>`;
+    }
+    return `<tr class="sub"><td>${r.k} ${chip(lb, lv)}</td>
+      <td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td>${r.n}</td></tr>`;
   }).join("");
   if ($("#mxBridgeNote")) {
     $("#mxBridgeNote").innerHTML = (br.coverage || []).map(c => `<span>${c}</span>`).join("");
   }
   renderWaterfall(br);
   const buckets = [
-    ["外部存入", st.deposit?.usd, "银行转存 5 笔", "in"],
-    ["外部取出", st.withdraw?.usd, "银行转取 2 笔", "out"],
-    ["资产迁移/换汇", st.migration?.usd, "USD/HKD 互转净额", st.migration?.usd >= 0 ? "in" : "out"],
+    ["外部存入", st.deposit?.usd, "银行转存", "in"],
+    ["外部取出", st.withdraw?.usd, "银行转取", "out"],
+    ["同号资产迁移/换汇", st.migration?.usd, "1599 内部 USD/HKD 互转净额（非入金）", st.migration?.usd >= 0 ? "in" : "out"],
     ["交易净额", st.trading_net?.usd, `成交 ${nf0.format(st.trade_count || 0)} 笔（买卖+费用）`, st.trading_net?.usd >= 0 ? "in" : "out"],
     ["股息与税", st.income?.usd, "现金分红 - 预扣税", st.income?.usd >= 0 ? "in" : "out"],
     ["利息/融券", st.cost?.usd, "融资利息 + 融券费", "out"],
@@ -1089,7 +1116,7 @@ function renderMetrics(m) {
       <div class="mx-bar"><i class="${dir === "out" ? "neg" : ""}" style="width:${Math.min(100, Math.abs(v || 0) / maxAbs * 100)}%"></i></div>
     </div>`).join("");
 
-  $("#mxStTag").textContent = `${st.rows ? nf0.format(st.rows) : 0} 行 · ${(st.period_start || "").slice(0, 10)} 起`;
+  $("#mxStTag").textContent = `富途 1599 · ${st.rows ? nf0.format(st.rows) : 0} 行 · ${(st.period_start || "").slice(0, 10)} 起`;
   loadFlows(true);
 }
 
@@ -1119,7 +1146,8 @@ function storyColor(key) {
 
 function storyUnitHint(p) {
   if (p.trades_kind === "平仓批次") return `${nf0.format(p.trades)} 平仓批次`;
-  const ac = (p.account_counts || []).filter(x => x.n).map(x => `${x.name} ${nf0.format(x.n)}`).join(" · ");
+  const ac = (p.account_counts || []).filter(x => x.n)
+    .map(x => `${x.name}${x.sub ? "·" + x.sub : ""} ${nf0.format(x.n)}`).join(" · ");
   return ac || `${nf0.format(p.trades)} 笔`;
 }
 

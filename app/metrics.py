@@ -195,7 +195,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
                 if s.get("start"):
                     s["days"] = (datetime.fromisoformat(s["end"])
                                  - datetime.fromisoformat(s["start"])).days
-            s["return_basis"] = "2020–2022 台账口径（2026 期无成交单据）"
+            s["return_basis"] = "2020–2022 台账口径"
         else:
             # POEMS ID：2026-03 起的真实对账单 + 成交确认
             s = _poems_stats(aid, rates, a)
@@ -250,6 +250,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
             tags.append({"k": "缺出入金", "v": "无流水"})
         if aid == "poems_sg":
             tags.append({"k": "单据", "v": f"{extra.get('doc_count') or 0} 份（2 期月结单）"})
+            tags.append({"k": "2026 期", "v": "无成交单据"})
             tags.append({"k": "持仓快照", "v": "2026-10-31"})
             tags.append({"k": "台账断档", "v": "2022-02→2026-09"})
             if extra.get("mf_units"):

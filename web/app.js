@@ -1076,10 +1076,10 @@ function renderMetrics(m) {
   }).join("");
 
   $("#mxRecon").querySelector("tbody").innerHTML = (m.recon_rows || []).map(r => `
-    <tr><td>${r.acct ? `<span class="muted">${r.acct} · </span>` : ""}${r.item} ${chip({ ok: "通过", warn: "待解释", danger: "差异大" }[r.level] || r.level, r.level === "ok" ? "ok" : r.level)}</td>
+    <tr><td>${r.acct ? `<span class="muted">${r.acct} · </span>` : ""}${r.item} ${chip({ ok: "通过", warn: "待解释", danger: "差异大" }[r.level] || r.level, r.level === "ok" ? "ok" : r.level)}<div class="mx-note-mob">${r.note}</div></td>
       <td>${r.broker}</td><td>${r.ledger}</td>
       <td class="num ${r.level === "danger" ? "down" : ""}">${r.diff}</td>
-      <td>${r.note}</td></tr>`).join("");
+      <td class="mx-note-col">${r.note}</td></tr>`).join("");
 
   const st = m.statement || {};
   $("#mxBridgeTag").textContent = `三账户 ${signed(br.verified || 0)} · 记忆 ${signed(br.memory || 0)} · 差 ${signed(br.gap || 0)}`;
@@ -1088,11 +1088,11 @@ function renderMetrics(m) {
     const lb = { ok: "凭证完整", warn: "口径注意", danger: "对不上", ref: "合计" }[r.level] || r.level;
     if (r.grp) {
       const cls = r.level === "ref" ? "grp-ref" : "grp";
-      return `<tr class="${cls}"><td>${r.k} ${chip(lb, lv)}</td>
-        <td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td>${r.n}</td></tr>`;
+      return `<tr class="${cls}"><td>${r.k} ${chip(lb, lv)}<div class="mx-note-mob">${r.n || ""}</div></td>
+        <td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td class="mx-note-col">${r.n}</td></tr>`;
     }
-    return `<tr class="sub"><td>${r.k} ${chip(lb, lv)}</td>
-      <td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td>${r.n}</td></tr>`;
+    return `<tr class="sub"><td>${r.k} ${chip(lb, lv)}<div class="mx-note-mob">${r.n || ""}</div></td>
+      <td class="num ${r.v < 0 ? "down" : "up"}">${signed(r.v)}</td><td class="mx-note-col">${r.n}</td></tr>`;
   }).join("");
   if ($("#mxBridgeNote")) {
     $("#mxBridgeNote").innerHTML = (br.coverage || []).map(c => `<span>${c}</span>`).join("");

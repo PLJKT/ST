@@ -393,6 +393,19 @@ table.grid tbody td{vertical-align:top}
 @media (max-width:900px){
   #storyKpis{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+.mx-note-mob{display:none}
+@media (max-width:700px){
+  .table-wrap{overflow-x:auto;max-width:100%}
+  table.grid,table.grid.compact{min-width:0}
+  table.grid td,table.grid th{white-space:normal}
+  .mx-recon td:first-child,.mx-recon td:nth-child(2),.mx-recon td:nth-child(3){white-space:normal}
+  .mx-recon th:first-child,.mx-recon td:first-child{width:42%}
+  /* 窄屏把「说明」列折到项目名下面，避免横向挤爆 */
+  .mx-note-col{display:none}
+  .mx-recon th:last-child{display:none}
+  .mx-note-mob{display:block;margin-top:4px;font-size:10.5px;line-height:1.45;color:var(--dim);white-space:normal}
+}
+
 @media (max-width:640px){
   .tl-item{grid-template-columns:36px minmax(0,1fr);gap:10px}
   .tl-dot{width:28px;height:28px;font-size:10px}

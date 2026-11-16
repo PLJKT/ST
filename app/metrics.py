@@ -8,6 +8,8 @@
 """
 from collections import defaultdict
 from datetime import datetime
+import json
+import os
 
 from . import db, futu_hist, market, poems, poems_sg, portfolio, statement
 
@@ -16,6 +18,80 @@ ACCOUNTS = [
     ("poems_sg", "POEMS SG（次）"),
     ("poems_id", "POEMS ID（本地）"),
 ]
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_API_CACHE = {"mtime": None, "data": {}}
+
+
+def _futu_api() -> dict:
+    """读 tools/futu_collect.py 落盘的富途 OpenAPI 快照（trade:read 只读）。
+
+    没有快照文件时返回 {}，调用方据此跳过 API 行，页面行为与接入前完全一致。
+    只做汇总统计，不把原始流水塞进接口响应，避免快照体积和隐私面扩大。
+    """
+    path = os.path.join(_ROOT, "data", "futu_api", "latest.json")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}
+    if _API_CACHE["mtime"] == mtime:
+        return _API_CACHE["data"]
+
+    raw = json.load(open(path, encoding="utf-8"))
+    rows = raw.get("cash_logs") or []
+    usd_pos_acc = next((a for a in raw.get("accounts") or [] if (a.get("positions") or [])), None)
+    funds = (usd_pos_acc or {}).get("funds") or {}
+
+    def amt(r):
+        try:
+            return float((r.get("cash_change") or "0").replace(",", "").replace("+", ""))
+        except ValueError:
+            return 0.0
+
+    def is_cost(name):
+        return any(w in name for w in ("Fee", "Interest", "Tax", "Borrowing"))
+
+    deposit = sum(amt(r) for r in rows if "Deposit" in (r.get("transaction_name") or ""))
+    withdraw = sum(amt(r) for r in rows if "Withdrawal" in (r.get("transaction_name") or ""))
+    cost = sum(amt(r) for r in rows if is_cost(r.get("transaction_name") or ""))
+    execs = sum(1 for r in rows if "Execution" in (r.get("transaction_name") or ""))
+
+    def cur(r):
+        return ((r.get("balance") or "").split() or [""])[-1]
+
+    mig = sum(amt(r) for r in rows
+              if (r.get("transaction_name") or "") == "Asset Transfer"
+              and "08/03/2024" in (r.get("created_time") or "")
+              and amt(r) > 0 and cur(r) == "USD")
+
+    def parse(t):
+        try:
+            return datetime.strptime(t, "%m/%d/%Y %H:%M:%S")
+        except ValueError:
+            return None
+
+    times = [parse(r.get("created_time") or "") for r in rows]
+    times = [t for t in times if t]
+    api = {
+        "generated_at": (raw.get("generated_at") or "")[:16],
+        "rows": len(rows),
+        "executions": execs,
+        "deposit": round(deposit, 2),
+        "withdraw": round(withdraw, 2),
+        "cost": round(cost, 2),
+        "migration_usd": round(mig, 2),
+        "first_row": min(times).strftime("%Y-%m-%d") if times else "",
+        "last_row": max(times).strftime("%Y-%m-%d %H:%M") if times else "",
+        "cash": float(funds.get("cash") or 0),
+        "market_val": float(funds.get("market_val") or 0),
+        "total_assets": float(funds.get("total_assets") or 0),
+        "realized_pl": float(funds.get("realized_pl") or 0),
+        "unrealized_pl": float(funds.get("unrealized_pl") or 0),
+        "accounts_n": len(raw.get("accounts") or []),
+    }
+    _API_CACHE.update(mtime=mtime, data=api)
+    return api
+
 
 
 def _rates() -> dict:
@@ -294,17 +370,17 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     }
 
     recon_rows = [
-        {"item": "现金余额", "broker": f"${recon['cash_broker_usd']:,.2f}",
+        {"item": "现金余额（CSV 快照）", "broker": f"${recon['cash_broker_usd']:,.2f}",
          "ledger": f"${recon['cash_sys_usd']:,.2f}",
          "diff": f"{recon['cash_gap']:+,.2f}",
          "level": "ok" if abs(recon["cash_gap"]) < 100 else "danger",
          "note": f"券商 {st['period_end'][:16]} 的期末余额，已写入系统现金（原台账 -14,618.28，9-24 快照）。"},
-        {"item": "成交笔数", "broker": f"{recon['broker_trade_count']} 笔",
+        {"item": "成交笔数（CSV 快照）", "broker": f"{recon['broker_trade_count']} 笔",
          "ledger": f"{recon['ledger_event_count']} 笔",
          "diff": f"{recon['trade_gap']:+d}",
          "level": "warn",
          "note": "券商流水覆盖 2024-08 起全部成交；台账只收了 ST 表里挑出来的平仓事件，缺口是历史遗漏。"},
-        {"item": "持仓市值", "broker": f"${recon['mv_broker']:,.2f}（券商快照价）",
+        {"item": "持仓市值（快照 vs 实时报价）", "broker": f"${recon['mv_broker']:,.2f}（券商快照价）",
          "ledger": f"${recon['market_value_usd']:,.2f}（实时报价）",
          "diff": f"{round(recon['market_value_usd'] - recon['mv_broker'], 2):+,.2f}",
          "level": "ok" if abs(recon["market_value_usd"] - recon["mv_broker"]) < 100 else "warn",
@@ -326,6 +402,51 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
          "level": "danger" if abs(recon["adjust_usd"]) > 1000 else "ok",
          "note": "持仓已按 2026-11-09 券商快照校正，此处应恒为 0；若再次偏离说明又有成交未回填。"},
     ]
+    # ── OpenAPI 直连（trade:read）补充行：只在存在 data/futu_api/latest.json 时出现 ──
+    api = _futu_api()
+    if api:
+        cash_api_gap = round(api["cash"] - recon["cash_broker_usd"], 2)
+        mv_api_gap = round(api["market_val"] - recon["mv_broker"], 2)
+        mig_gap = round(api["migration_usd"] - (recon["migration_usd"] or 0), 2)
+        api_rows = [
+            {"item": "流水覆盖（API 直连）",
+             "broker": f"{api['rows']:,} 行 · {api['first_row'][:7]} 起",
+             "ledger": f"{recon['ledger_event_count']} 笔台账事件",
+             "diff": f"{api['rows'] - recon['ledger_event_count']:+,}",
+             "level": "ok",
+             "note": f"OpenAPI 快照 {api['generated_at']}，其中成交执行 {api['executions']:,} 笔；"
+                     "台账缺的是历史遗漏，不是新发生的错账。"},
+            {"item": "现金余额（API 实时）",
+             "broker": f"${api['cash']:,.2f}",
+             "ledger": f"${recon['cash_broker_usd']:,.2f}",
+             "diff": f"{cash_api_gap:+,.2f}",
+             "level": "warn" if abs(cash_api_gap) >= 100 else "ok",
+             "note": "同一账户两个时点：API 是刚才实时余额，台账是资金明细快照；"
+                     "差额为两次采样之间的成交与费用，不改成新口径。"},
+            {"item": "持仓市值（API 实时）",
+             "broker": f"${api['market_val']:,.2f}",
+             "ledger": f"${recon['mv_broker']:,.2f}（快照价）",
+             "diff": f"{mv_api_gap:+,.2f}",
+             "level": "warn" if abs(mv_api_gap) >= 100 else "ok",
+             "note": f"三个来源不同步：API 用富途自身报价 ${api['market_val']:,.2f}、台账实时用 yfinance "
+                     f"${recon['market_value_usd']:,.2f}、快照价 ${recon['mv_broker']:,.2f}；差额全部是报价源与时点。"},
+            {"item": "成本类流水（API）",
+             "broker": f"${api['cost']:,.2f}",
+             "ledger": "未逐笔记入",
+             "diff": f"{api['cost']:+,.2f}",
+             "level": "warn",
+             "note": "费用、融资利息、借券费、股息税合计；台账只记了成交佣金，"
+                     "这部分是「感觉亏 5 万」与账簿差额的实证来源之一。"},
+            {"item": "迁移入账（API）",
+             "broker": f"${api['migration_usd']:,.2f}",
+             "ledger": f"${(recon['migration_usd'] or 0):,.2f}",
+             "diff": f"{mig_gap:+,.2f}",
+             "level": "danger" if abs(mig_gap) >= 1000 else "warn",
+             "note": "2024-08-03 同号内部迁移，API 记 +25,696.42 + 1,865.01 USD，"
+                     "同日另有 −42,208.44 HKD 转出；差额疑为港元现金折算，未确认前不改口径。"},
+        ]
+        recon_rows[2:2] = api_rows
+
     for r in recon_rows:                     # 只属于富途 1599：标注账户，避免被当成全站口径
         r["acct"] = "富途"
 
@@ -498,6 +619,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         "statement_yearly": st.get("yearly", []),
         "statement_symbols": st.get("by_symbol", []),
         "recon": recon,
+        "recon_api": _futu_api(),
         "recon_rows": recon_rows,
     }
 

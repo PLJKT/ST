@@ -1117,6 +1117,15 @@ function renderMetrics(m) {
     </div>`).join("");
 
   $("#mxStTag").textContent = `富途 1599 · ${st.rows ? nf0.format(st.rows) : 0} 行 · ${(st.period_start || "").slice(0, 10)} 起`;
+  const api = m.recon_api || {};
+  if ($("#mxApiTag")) {
+    if (api.rows) {
+      $("#mxApiTag").textContent = `API 直连 · ${api.rows.toLocaleString()} 行 · 同步 ${api.generated_at.slice(5, 16)}`;
+      $("#mxApiTag").style.display = "";
+    } else {
+      $("#mxApiTag").style.display = "none";
+    }
+  }
   loadFlows(true);
 }
 

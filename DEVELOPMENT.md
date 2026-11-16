@@ -416,6 +416,30 @@ python tools\publish_public.py --push
 
 改口径必须同时改三处：`app/metrics.py`（数值与说明）、`web/app.js`（Hero/账户卡/对账表/瀑布图）、`data/st_numbers.json` 的 `life_recon`（若涉及期初期末锚点），然后重导 `docs/` 并跑 `redact_audit.py`。
 
+### 8.3 富途 OpenAPI 直连（2026-11-16 接入，只读）
+
+**目的**：不再靠手工导「资金明细」CSV，改成接口增量拉取，把 账户 段的流水断档自动补齐。
+
+| 项目 | 值 |
+|---|---|
+| 认证 | OAuth 2.1 + PKCE，scope 只有 `trade:read`（无写权限） |
+| 凭据位置 | `<local> Git 仓库之外**，绝不入库） |
+| 客户端 | `client_id 3be216b3-…`（`/oauth2/register` 注册，回调 `http://localhost:60355/callback`） |
+| 采集器 | `tools/futu_collect.py`：`--check` 只看；`--days N` 或 `--since YYYY-MM-DD` 回补 |
+| 落盘 | `data/futu_api/latest.json` + 时间戳副本（只进私有库；`docs/` 导出时不含原始流水） |
+| token 寿命 | `access_token` 2 小时（采集器自动刷新）；`refresh_token` 默认 14 天，过期需重新走一次浏览器授权 |
+
+账户侧事实（接口实测，可作为口径依据）：
+
+1. 授权到两个业务账户 `…084369`（尾号 2025，无资产）与 `…871114`（尾号 5882），**共用综合账户卡号尾号 账户** —— 券商侧证据支持 8.2 第 6 条：账户/账户 → 账户 是同号内部升级。
+2. 2024-08-01 起资金流水可全量回溯（首次拉取 1,156 行 / 58 页），**2024-08-05 之前没有数据**；2020–2024 的 账户/账户 明细不在接口范围内，存量仍以 CSV 台账为准。
+3. 外部资金只有 `Bank Transfer Deposits` +34,676.90（5 笔）与 `Bank Transfer Withdrawals` −7,200.00（2 笔），与台账逐笔一致；**没有任何第三方券商转入**。
+4. 成本类流水（费用/融资利息/借券费/股息税）合计 −4,209.45，台账未逐笔记入 —— 这是「感觉亏 5 万」与账簿 −2.77 万差额的实证来源之一。
+
+`metrics.key_metrics()` 在存在 `data/futu_api/latest.json` 时，会在 `recon_rows` 插入 5 行（流水覆盖 / 现金余额 / 持仓市值 / 成本类流水 / 迁移入账），并输出 `recon_api` 供前端 chip 显示；**没有快照文件时这些行不出现**，行为与接入前一致。
+
+⚠️ **未决差异（不改口径，只显性列出）**：API 显示 2024-08-03 迁移入账 USD **27,561.43**（+25,696.42 + 1,865.01），台账记 22,524.06，差 **+5,037.37**；同日另有 −42,208.44 HKD 转出，差额疑为港元现金折算口径。确认之前，富途「全历史累计」仍按台账口径，页面用 `danger` chip 标出。
+
 ---
 
 ## 9. 本地开发流程
@@ -430,6 +454,7 @@ uv run --with fastapi --with uvicorn --with yfinance python server.py
   `Get-NetTCPConnection -LocalPort 8300 -State Listen | Select -Expand OwningProcess -Unique | Stop-Process -Force`
 - 前端改完要 bump 版本号（`web/index.html` 里 `style.css?v=` / `app.js?v=`），否则浏览器用旧缓存。
 - 12–16 秒后接口才可用（首次要拉汇率/行情）。
+- **本机 venv 绑定的是运行时自带的 Python 基础路径**。基础路径一变（平台升级/换机），`.venv\Scripts\python.exe` 会报 `did not find executable at …`；修复方式：`Rename-Item .venv .venv.broken` → `python -m venv .venv` → `pip install -r requirements.txt`。2026-11-16 已重建一次。
 
 **跑任何导入 `app.*` 的 Python 脚本，必须带 `--with yfinance --with fastapi`**，否则 `app.market` 导入时 `ModuleNotFoundError: No module named 'yfinance'`。
 

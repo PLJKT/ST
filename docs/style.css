@@ -280,6 +280,10 @@ footer{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:space
 .mx-recon tr.sub td{padding-left:16px;font-size:11px;color:var(--muted)}
 .mx-recon tr.sub td:first-child{font-weight:400;white-space:normal;color:var(--muted)}
 .mx-recon tr.sub td.num{font-size:11.5px}
+/* 亏损差额拆解：4 列（项目 / 金额 / 性质 / 依据） */
+#mxGap th:nth-child(3),#mxGap td:nth-child(3){width:96px;text-align:center}
+#mxGap th:nth-child(2),#mxGap td:nth-child(2){width:120px;text-align:right}
+#mxGap td:first-child{white-space:normal}
 .mx-bridge-note{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:10.5px;line-height:1.5;color:var(--dim)}
 .mx-bridge-note span{position:relative;padding-left:9px}
 .mx-bridge-note span::before{content:"";position:absolute;left:0;top:5px;width:4px;height:4px;border-radius:50%;background:var(--muted)}

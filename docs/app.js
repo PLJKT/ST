@@ -1097,6 +1097,25 @@ function renderMetrics(m) {
   if ($("#mxBridgeNote")) {
     $("#mxBridgeNote").innerHTML = (br.coverage || []).map(c => `<span>${c}</span>`).join("");
   }
+
+  const gb = m.gap_bridge || { rows: [] };
+  if ($("#mxGap")) {
+    const KIND = { ok: ["已核实", "ok"], warn: ["口径外", "warn"], ref: ["参照", "info"],
+                   none: ["账本外", "off"], gap: ["无凭证", "off"] };
+    $("#mxGap").querySelector("tbody").innerHTML = (gb.rows || []).map(r => {
+      const [lb, lv] = KIND[r.kind] || ["", "info"];
+      const amt = r.v == null ? "—" : signed(r.v);
+      const cls = (r.kind === "ref") ? "grp-ref" : (r.kind === "none" || r.kind === "gap") ? "sub" : "";
+      return `<tr class="${cls}"><td>${r.k}<div class="mx-note-mob">${r.n}</div></td>
+        <td class="num ${r.v == null ? "" : (r.v < 0 ? "down" : "up")}">${amt}</td>
+        <td><span class="chip tag-mini ${lv}">${lb}</span></td>
+        <td class="mx-note-col">${r.n}</td></tr>`;
+    }).join("");
+    if ($("#mxGapTag")) {
+      $("#mxGapTag").textContent =
+        `账簿 ${signed(gb.verified || 0)} · 记忆 ${signed(gb.memory || 0)} · 无凭证 ${signed(gb.gap || 0)}`;
+    }
+  }
   renderWaterfall(br);
   const buckets = [
     ["外部存入", st.deposit?.usd, "银行转存", "in"],

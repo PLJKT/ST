@@ -449,8 +449,8 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
              "ledger": "未逐笔记入",
              "diff": f"{api['cost']:+,.2f}",
              "level": "warn",
-             "note": "费用、融资利息、借券费、股息税合计；台账只记了成交佣金，"
-                     "这部分是「感觉亏 5 万」与账簿差额的实证来源之一。"},
+             "note": "费用、融资利息、借券费、股息税合计。台账只逐笔记了成交佣金，这里是明细缺失；"
+                     "但期末现金是券商真实余额，这些钱已经扣在现金里 → 只影响费用可见度，不使合计少算。"},
             {"item": "迁移入账（API 全量）",
              "broker": f"${api['migration_usd']:,.2f}",
              "ledger": f"${(recon['migration_usd'] or 0):,.2f}",
@@ -583,7 +583,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     bridge_rows.append({
         "k": "你的记忆 · 约 −5 万（全部账户已实现 + 浮亏的总体感觉）", "v": memory, "level": "danger", "grp": True,
         "n": (f"与三账户合计差 {round(memory - total, 2):+,.2f}，与现值口径合计差 {round(memory - total_eq, 2):+,.2f}。"
-              "只作统计方向、不作凭证：账面能逐笔对上的是上表各账户，差额来自记忆本身的粗估，不是漏账。"
+              "只作统计方向、不作凭证：差额已在下表「亏损差额拆解」逐项列明，没有任何一项能凭证化为亏损。"
               f"早期那条「回本缺口 {float(old.get('gap') or 49293.65):,.2f}」把多账户本金减单账户权益，口径作废。")},
     )
     bridge = {
@@ -594,6 +594,34 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         "memory": memory,
         "gap": round(memory - total, 2),
         "gap_eq": round(memory - total_eq, 2),
+    }
+    # ── 亏损差额拆解：账簿 → 记忆参照 ─────────────────────────────
+    # 只列**能查证**的项。「记忆 −5 万」单列为参照行，不参与合计，避免拿感觉凑账。
+    # 注意：成本类流水（费用/利息/税）已经体现在期末现金里，**不得**再作为「漏算亏损」加回，
+    # 否则是重复计算；它只是台账明细缺失，不是合计偏低。
+    api_open = round(float(api.get("unrealized_pl") or 0), 2) if api else 0.0
+    amat = fh.get("amat") or {}
+    gap_rows = [
+        {"k": "账簿三账户合计（券商资金口径 · 逐笔可核）", "v": total, "kind": "ok",
+         "n": f"富途 {futu_life:,.2f} + SG {sg_life:,.2f} + ID {id_pnl:,.2f}；每一段都有成交、流水、单据支撑"},
+        {"k": "口径外 · 在手持仓浮动（仅参考，不并入合计）", "v": api_open, "kind": "warn",
+         "n": (f"券商 API unrealized_pl {api_open:+,.2f}。资金口径已把在手持仓按零资产处理，"
+               f"再把浮亏加回去就是混两种口径，故本行只作说明、不进合计")},
+        {"k": f"账本外 · AMAT {amat.get('qty', 394):,.0f} 股（原值 {float(amat.get('cost_usd') or 0):,.2f}，去向无凭证）",
+         "v": None, "kind": "none",
+         "n": (f"末笔成交 {amat.get('last_trade') or '2023-03-03'}；2024-08-03 迁移只有现金、没有证券转入，"
+               "1599 侧 0 次出现 → 已按「转出本账本」处理，原值移出。转出价与结果没有任何凭证，"
+               "这是与记忆差额的唯一合理嫌疑，但不能当账")},
+        {"k": "记忆 · 约 −5 万（已实现 + 浮亏的总体感觉）", "v": memory, "kind": "ref",
+         "n": "只作统计方向与参照线：不参与合计，也不作为任何账务数字"},
+        {"k": "差额 · 无凭证支持", "v": round(memory - total, 2), "kind": "gap",
+         "n": f"= 记忆 {memory:,.2f} − 账簿 {total:,.2f}。没有成交、流水、单据能证明这部分亏损发生过，故不入账"},
+    ]
+    gap_bridge = {
+        "rows": gap_rows,
+        "verified": total, "open_pnl": api_open,
+        "memory": memory, "gap": round(memory - total, 2),
+        "amat_cost": float(amat.get("cost_usd") or 0),
     }
     coverage = [
         "口径：三个账户各自独立结算，从未互转资金或持仓，入金全部来自个人储蓄。富途 2024-08-03 的「资产迁移」是同一富途号内部的子账户升级（6519/9461 → 1599），不是从 POEMS 转入，也不是外部入金",
@@ -627,6 +655,7 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
         "overall": overall,
         "accounts": accounts,
         "pnl_bridge": bridge,
+        "gap_bridge": gap_bridge,
 
         "statement": {k: v for k, v in st.items()
                       if k not in ("monthly", "yearly", "by_symbol")},

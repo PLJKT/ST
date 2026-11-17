@@ -59,10 +59,21 @@ def _futu_api() -> dict:
     def cur(r):
         return ((r.get("balance") or "").split() or [""])[-1]
 
-    mig = sum(amt(r) for r in rows
-              if (r.get("transaction_name") or "") == "Asset Transfer"
-              and "08/03/2024" in (r.get("created_time") or "")
-              and amt(r) > 0 and cur(r) == "USD")
+    # 迁移口径：**全量净额**。2024-08-03 的「资产迁移」不是只有 USD 进项，
+    # 同日还有 −17,141.59 与 −25,080.84 HKD（余额 −42,222.43 HKD，是随迁移带过来的港元负债），
+    # 08-12 补记 +341.28 USD，2025-10-30 有一次换汇。只取 USD 正向行会凭空多出 5,037 的差额。
+    fx = _rates()
+
+    def to_usd(r):
+        return amt(r) * float(fx.get(cur(r) or "USD", 1.0))
+
+    mig_types = ("Asset Transfer", "Currency Exchange")
+    mig = sum(to_usd(r) for r in rows if (r.get("transaction_name") or "") in mig_types)
+    mig_usd_in = sum(amt(r) for r in rows
+                     if (r.get("transaction_name") or "") == "Asset Transfer"
+                     and amt(r) > 0 and cur(r) == "USD")
+    mig_hkd = sum(amt(r) for r in rows
+                  if (r.get("transaction_name") or "") == "Asset Transfer" and cur(r) == "HKD")
 
     def parse(t):
         try:
@@ -80,6 +91,9 @@ def _futu_api() -> dict:
         "withdraw": round(withdraw, 2),
         "cost": round(cost, 2),
         "migration_usd": round(mig, 2),
+        "migration_usd_in": round(mig_usd_in, 2),
+        "migration_hkd": round(mig_hkd, 2),
+        "fx_hkd": round(float(fx.get("HKD") or 0.1282), 5),
         "first_row": min(times).strftime("%Y-%m-%d") if times else "",
         "last_row": max(times).strftime("%Y-%m-%d %H:%M") if times else "",
         "cash": float(funds.get("cash") or 0),
@@ -437,13 +451,14 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
              "level": "warn",
              "note": "费用、融资利息、借券费、股息税合计；台账只记了成交佣金，"
                      "这部分是「感觉亏 5 万」与账簿差额的实证来源之一。"},
-            {"item": "迁移入账（API）",
+            {"item": "迁移入账（API 全量）",
              "broker": f"${api['migration_usd']:,.2f}",
              "ledger": f"${(recon['migration_usd'] or 0):,.2f}",
              "diff": f"{mig_gap:+,.2f}",
-             "level": "danger" if abs(mig_gap) >= 1000 else "warn",
-             "note": "2024-08-03 同号内部迁移，API 记 +25,696.42 + 1,865.01 USD，"
-                     "同日另有 −42,208.44 HKD 转出；差额疑为港元现金折算，未确认前不改口径。"},
+             "level": "ok" if abs(mig_gap) < 1 else ("danger" if abs(mig_gap) >= 1000 else "warn"),
+             "note": f"全量口径：USD 进项 {api['migration_usd_in']:,.2f} + 08-12 补记，"
+                     f"同日港元腿 {api['migration_hkd']:,.2f}（按 {api['fx_hkd']:.4f} 折美元）与 2025-10-30 换汇一并计入；"
+                     "与台账逐分吻合。"},
         ]
         recon_rows[2:2] = api_rows
 

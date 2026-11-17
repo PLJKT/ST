@@ -36,6 +36,14 @@ _TTL = 1800
 _cache: dict[str, tuple[float, list]] = {}
 
 
+def _finite(v) -> bool:
+    """数值可用吗：None / NaN / inf 都算不可用（yfinance 盘中会给 NaN close）。"""
+    try:
+        return v is not None and math.isfinite(float(v))
+    except (TypeError, ValueError):
+        return False
+
+
 def _bars(sym: str, mk: str | None = None, period: str = "1y") -> list:
     key = f"{sym}|{period}"
     hit = _cache.get(key)
@@ -48,6 +56,8 @@ def _bars(sym: str, mk: str | None = None, period: str = "1y") -> list:
         bars = data.get("bars") or []
     except Exception:
         bars = []
+    # 当日未收盘时 yfinance 会给最后一根 NaN close；NaN 会污染 beta 并让 int(round()) 抛异常
+    bars = [b for b in bars if _finite(b.get("c"))]
     _cache[key] = (time.time(), bars)
     return bars
 
@@ -83,7 +93,7 @@ def _ret_map(bars: list) -> dict[str, float]:
     out = {}
     for i in range(1, len(bars)):
         prev = bars[i - 1]["c"]
-        if prev:
+        if prev and _finite(prev) and _finite(bars[i]["c"]):
             out[bars[i]["t"]] = bars[i]["c"] / prev - 1
     return out
 
@@ -99,7 +109,8 @@ def _beta(sym_bars: list, bench_bars: list) -> float | None:
     my = sum(ys) / len(ys)
     cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     var = sum((x - mx) ** 2 for x in xs)
-    return (cov / var) if var else None
+    beta = (cov / var) if var else None
+    return beta if _finite(beta) else None
 
 
 _hist_cache: dict[str, dict] = {}
@@ -294,6 +305,10 @@ def _hedge(rows: list, fx: dict) -> dict:
                           "note": "对冲标的暂无行情"})
             continue
         hp = bars[-1]["c"]
+        if not _finite(hp) or not _finite(d["beta_exposure"]):
+            plans.append({"market": mk, "bench": d["bench"], "net": d["beta_exposure"],
+                          "note": "对冲标的当日价未定（盘中），暂不出股数"})
+            continue
         need = -d["beta_exposure"]
         shares = need / hp if hp else 0
         plan = {"market": mk, "bench": d["bench"], "net": d["beta_exposure"],

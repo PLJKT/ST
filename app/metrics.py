@@ -83,6 +83,30 @@ def _futu_api() -> dict:
 
     times = [parse(r.get("created_time") or "") for r in rows]
     times = [t for t in times if t]
+    # 持仓：按券商最新持仓汇总（数量为 0 的平仓记录跳过），港股按 fx 折 USD，
+    # 这样能与台账「单一 USD 口径」直接比数量与市值，差异不再靠猜。
+    pos = []
+    for a in raw.get("accounts") or []:
+        for p in (a.get("positions") or []):
+            try:
+                qty = float(p.get("qty") or 0)
+            except ValueError:
+                qty = 0.0
+            if not qty:
+                continue
+            ccy = (p.get("currency") or "USD").upper()
+            rate = 1.0 if ccy == "USD" else float(fx.get(ccy) or 1.0)
+            pos.append({
+                "code": p.get("code") or "",
+                "name": p.get("name") or "",
+                "qty": qty,
+                "cost": float(p.get("cost") or 0),
+                "price": float(p.get("price") or 0),
+                "mv_native": float(p.get("market_val") or 0),
+                "mv_usd": round(float(p.get("market_val") or 0) * rate, 2),
+                "pl_native": float(p.get("pl_val") or 0),
+                "ccy": ccy,
+            })
     api = {
         "generated_at": (raw.get("generated_at") or "")[:16],
         "rows": len(rows),
@@ -102,9 +126,43 @@ def _futu_api() -> dict:
         "realized_pl": float(funds.get("realized_pl") or 0),
         "unrealized_pl": float(funds.get("unrealized_pl") or 0),
         "accounts_n": len(raw.get("accounts") or []),
+        "positions": pos,
+        "position_count": len(pos),
+        "position_mv_usd": round(sum(x["mv_usd"] for x in pos), 2),
     }
     _API_CACHE.update(mtime=mtime, data=api)
     return api
+
+
+def _pos_note(api: dict, recon: dict) -> str:
+    """持仓明细核对：把「券商最新数量」与「台账快照数量」的差异写成一句话。
+
+    只做数量比对，不替任何一方改数；市值差由数量差 + 报价源共同造成。
+    """
+    def bare(code):
+        c = (code or "").upper()
+        for pre in ("US.", "HK.", "SG.", "JP.", "CN.", "MY.", "AU."):
+            if c.startswith(pre):
+                c = c[len(pre):]
+                break
+        return c or "?"
+
+    led = {bare(x.get("symbol")): float(x.get("qty") or 0) for x in (recon.get("positions_ledger") or [])}
+    act = {bare(p.get("code")): float(p.get("qty") or 0) for p in (api.get("positions") or [])}
+    parts = []
+    for k in sorted(set(led) | set(act)):
+        lv, av = led.get(k), act.get(k)
+        if lv is None:
+            parts.append(f"券商新增 {k} {av:,.0f} 股")
+        elif av is None:
+            parts.append(f"台账有/券商无 {k}")
+        elif lv != av:
+            parts.append(f"{k} {lv:,.0f}→{av:,.0f} 股")
+    head = (f"券商持仓为 {api.get('generated_at', '')[:10]} 最新值；台账持仓快照 "
+            f"{recon.get('positions_snapshot', '')[:10]} 尚未覆盖。")
+    if parts:
+        return head + "数量差异：" + "、".join(parts) + "；市值差由此产生，不是错账。"
+    return head + "数量与券商一致，差额只来自报价源。"
 
 
 
@@ -227,6 +285,8 @@ def _cash_recon(rates: dict, rows: list[dict] | None = None) -> dict:
         "stale_flow_usd": stale_flow, "adjust_usd": round(adjust, 2),
         "equity_est": round(equity_ledger + adjust, 2),
         "stale_detail": after["by_symbol"], "positions_snapshot": snap,
+        "positions_ledger": [{"symbol": r.get("symbol"), "qty": r.get("qty") or 0}
+                             for r in futu_rows if r.get("symbol")],
         "cash_deposit_usd": st.get("deposit", {}).get("usd"),
         "cash_withdraw_usd": abs(st.get("withdraw", {}).get("usd") or 0),
         "migration_usd": st.get("migration", {}).get("usd"),
@@ -444,6 +504,12 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
              "level": "warn" if abs(mv_api_gap) >= 100 else "ok",
              "note": f"三个来源不同步：API 用富途自身报价 ${api['market_val']:,.2f}、台账实时用 yfinance "
                      f"${recon['market_value_usd']:,.2f}、快照价 ${recon['mv_broker']:,.2f}；差额全部是报价源与时点。"},
+            {"item": "持仓明细（API vs 台账快照）",
+             "broker": f"{api['position_count']} 只 · ${api['market_val']:,.2f}",
+             "ledger": f"{len(recon['positions_ledger'])} 只 · ${recon['mv_broker']:,.2f}（{recon['positions_snapshot'][:10]}）",
+             "diff": f"{mv_api_gap:+,.2f}",
+             "level": "warn" if abs(mv_api_gap) >= 100 else "ok",
+             "note": _pos_note(api, recon)},
             {"item": "成本类流水（API）",
              "broker": f"${api['cost']:,.2f}",
              "ledger": "未逐笔记入",

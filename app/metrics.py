@@ -263,10 +263,14 @@ def _cash_recon(rates: dict, rows: list[dict] | None = None) -> dict:
     after = statement.trades_after("futu_main", snap, symbols)
 
     mv = round(sum(r["value_usd"] or 0 for r in futu_rows), 2)
-    # 券商快照市值：数量 × 券商当时报价（与实时报价的差额单独列示）
-    mv_broker = round(sum((r.get("qty") or 0) * (r.get("st_price") or r.get("price") or 0)
-                          * (-1 if (r.get("side") or "").upper() == "SHORT" else 1)
-                          for r in futu_rows), 2)
+    # 券商快照市值：数量 × 券商当时报价 × 方向；再按持仓币种折 USD
+    # （此前漏了折算，港股 00700 的 34,840 HKD 会被当成 34,840 美元计入市值）
+    mv_broker = 0.0
+    for r in futu_rows:
+        v = (r.get("qty") or 0) * (r.get("st_price") or r.get("price") or 0)
+        v *= -1 if (r.get("side") or "").upper() == "SHORT" else 1
+        mv_broker += _usd(v, r.get("ccy") or "USD", rates) or 0
+    mv_broker = round(mv_broker, 2)
     equity_ledger = round(cash_sys_usd + mv, 2)
     stale_flow = round(sum(after["by_symbol"].values()), 2)
     adjust = -stale_flow

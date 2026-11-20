@@ -448,21 +448,22 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
     }
 
     recon_rows = [
-        {"item": "现金余额（CSV 快照）", "broker": f"${recon['cash_broker_usd']:,.2f}",
+        {"item": "现金余额（台账锚点）", "broker": f"${recon['cash_broker_usd']:,.2f}",
          "ledger": f"${recon['cash_sys_usd']:,.2f}",
          "diff": f"{recon['cash_gap']:+,.2f}",
          "level": "ok" if abs(recon["cash_gap"]) < 100 else "danger",
-         "note": f"券商 {st['period_end'][:16]} 的期末余额，已写入系统现金（原台账 -14,618.28，9-24 快照）。"},
-        {"item": "成交笔数（CSV 快照）", "broker": f"{recon['broker_trade_count']} 笔",
+         "note": f"台账期末 = 券商 {st['period_end'][:16]} 流水最后一条余额（按 fx 折 USD）后再写进系统现金；"
+                 "与 API 实时现金的差是两次采样之间的成交与费用，不改口径。"},
+        {"item": "成交笔数（台账流水）", "broker": f"{recon['broker_trade_count']} 笔",
          "ledger": f"{recon['ledger_event_count']} 笔",
          "diff": f"{recon['trade_gap']:+d}",
          "level": "warn",
          "note": "券商流水覆盖 2024-08 起全部成交；台账只收了 ST 表里挑出来的平仓事件，缺口是历史遗漏。"},
-        {"item": "持仓市值（快照 vs 实时报价）", "broker": f"${recon['mv_broker']:,.2f}（券商快照价）",
+        {"item": "持仓市值（快照价 vs 实时报价）", "broker": f"${recon['mv_broker']:,.2f}（券商快照价）",
          "ledger": f"${recon['market_value_usd']:,.2f}（实时报价）",
          "diff": f"{round(recon['market_value_usd'] - recon['mv_broker'], 2):+,.2f}",
          "level": "ok" if abs(recon["market_value_usd"] - recon["mv_broker"]) < 100 else "warn",
-         "note": "数量已与 2026-11-09 券商快照逐行一致；差额只来自报价时点（GLD 实时 372.52 vs 券商 376.670）。"},
+         "note": f"数量已与 {recon['positions_snapshot'][:10]} 券商持仓逐行一致（港股按 fx 折 USD）；差额只来自报价时点。"},
         {"item": "累计交易净额", "broker": f"${recon['broker_net']:,.2f}（现金口径）",
          "ledger": f"${round(sum(a['realized_usd'] or 0 for a in accounts if a['id']=='futu_main'), 2):,.2f}（已实现）",
          "diff": f"{(recon['broker_net'] - (accounts[0]['realized_usd'] or 0)):+,.2f}",
@@ -474,11 +475,11 @@ def key_metrics(rows: list[dict] | None = None) -> dict:
          "level": "ok",
          "note": f"券商口径 = 期末现金 ${recon['cash_broker_usd']:,.2f} + 持仓 ${recon['mv_broker']:,.2f} − 净投入 ${recon['net_external_usd']:,.2f}；"
                  "与台账已实现的差额含浮动盈亏、费用、利息与股息，同属口径差、不是错账。"},
-        {"item": "9-24 后成交未扣仓", "broker": f"${recon['stale_flow_usd']:+,.2f} 净卖出",
+        {"item": "快照后成交未扣仓", "broker": f"${recon['stale_flow_usd']:+,.2f} 净卖出",
          "ledger": f"持仓快照 {recon['positions_snapshot'][:10]}",
          "diff": f"{recon['adjust_usd']:+,.2f}",
          "level": "danger" if abs(recon["adjust_usd"]) > 1000 else "ok",
-         "note": "持仓已按 2026-11-09 券商快照校正，此处应恒为 0；若再次偏离说明又有成交未回填。"},
+         "note": f"持仓已按 {recon['positions_snapshot'][:10]} 券商持仓校正，此处应恒为 0；若再次偏离说明又有成交未回填。"},
     ]
     # ── OpenAPI 直连（trade:read）补充行：只在存在 data/futu_api/latest.json 时出现 ──
     api = _futu_api()

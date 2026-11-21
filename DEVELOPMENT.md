@@ -452,6 +452,32 @@ python tools\publish_public.py --push
 
 ⚠️ 这条经验适用于所有「同号内部迁移」：负数余额的币种腿属于负债，必须计入净迁移，否则会把负债当成白送的资产。
 
+### 8.4 每日自动同步（2026-11-21 上线）
+
+一条命令把「拉取 → 入账 → 重算 → 导出 → 脱敏 → 发布 → 推送」串起来，入口是 `tools/daily_sync.py`：
+
+```powershell
+# 正式跑（等同计划任务做的事）
+& ".\.venv\Scripts\python.exe" -X utf8 "tools\daily_sync.py"
+# 只拉取 + 核对有没有新流水，不写库不发版
+& ".\.venv\Scripts\python.exe" -X utf8 "tools\daily_sync.py" --dry-run
+# 本地更新但不推远端
+& ".\.venv\Scripts\python.exe" -X utf8 "tools\daily_sync.py" --no-push
+```
+
+| 项目 | 值 |
+|---|---|
+| 计划任务 | Windows 任务计划程序 `ST Futu Daily Sync`，每天 **07:30 WIB**（美股收盘 04:00 之后，取隔夜成交与最新持仓） |
+| 解释器 | `.venv\Scripts\pythonw.exe`（不弹黑窗，输出全靠日志） |
+| 日志 | `data/logs/daily_sync_YYYYMMDD_HHMMSS.log`（`*.log` 已在 `.gitignore`，不进库） |
+| 状态 | `data/logs/last_status.json`：`ok` / 快照时间 / 现金 / 市值 / 现金差 / 流水行数 / 起止时间 |
+| 手动触发 | `Start-ScheduledTask -TaskName "ST Futu Daily Sync"` |
+| 改时间 | `Set-ScheduledTask -TaskName "ST Futu Daily Sync" -Trigger (New-ScheduledTaskTrigger -Daily -At "06:00")` |
+
+纪律：**任何一步失败就停，绝不发布半成品**。采集失败（多半是 refresh_token 过期）→ 不动数据不发布；导出不是「失败 0 个」→ 不发布；`redact_audit.py` 不 PASS → 不发布。服务不在跑时脚本会用当前源码自己起一个，再导出 —— 这一步是必需的，旧进程会把旧的 `mv_broker` 算法算进静态快照（2026-11-20 就踩过）。
+
+已知边界：`refresh_token` 默认 14 天过期，到期后当天 07:30 那次会失败并在 `last_status.json` 留 `error=collect_failed`，需要重新走一次浏览器授权（`tools/futu_collect.py --check` 可先验）。机器关机会跳过当天，开机后由「错过就补跑」（`StartWhenAvailable`）补上。
+
 ---
 
 ## 9. 本地开发流程
